@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Author: Tran Minh Quan, quantm@unist.ac.kr
-import os, sys, argparse, glob, cv2
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+
+
+import os, sys, argparse, glob, cv2, six
+
 
 
 # Misc. libraries
@@ -16,12 +18,15 @@ from natsort import natsorted
 import numpy as np 
 import skimage
 import skimage.io
+import skimage.color
 import skimage.transform
 
+import tensorflow as tf
 ###################################################################################################
 from tensorpack import *
 from tensorpack.dataflow import dataset
 from tensorpack.utils.gpu import get_nr_gpu
+from tensorpack.utils.utils import get_rng
 from tensorpack.tfutils import optimizer, gradproc
 from tensorpack.tfutils.summary import add_moving_summary, add_param_summary
 from tensorpack.tfutils.scope_utils import auto_reuse_variable_scope
@@ -66,6 +71,8 @@ class ImageDataFlow(RNGDataFlow):
 		images = natsorted(images)
 		styles = natsorted(styles)
 
+		# print(images)
+		# print(styles)
 
 		#
 		# Pick the image over size 
@@ -78,10 +85,30 @@ class ImageDataFlow(RNGDataFlow):
 			rand_style = np.random.randint(0, len(styles))
 
 			if self.isTrain:
-				# Read the 3D image and style
+				# Read the 3D image
 				image = skimage.io.imread(images[rand_image])
-				style = skimage.io.imread(styles[rand_style])
+				if image.shape != [DIMZ, DIMY, DIMX]: # Pad the image
+					dimz, dimy, dimx = image.shape
+					patz, paty, patx = (DIMZ-dimz)/2, (DIMY-dimy)/2, (DIMX-dimx)/2
+					patz, paty, patx = int(patz), int(paty), int(patx)
+					image = np.pad(image, ((patz, patz), (paty, paty), (patx, patx)), 
+								   mode='constant', 
+								   constant_values=0, 
+						)
+				image = np.transpose(image, [1, 2, 0])
+				# image = np.expand_dims(image, axis=-1)
+				image = np.expand_dims(image, axis=0)
 
+				# Read the style
+				style = skimage.io.imread(styles[rand_style])
+				if style.ndim == 2: # If gray image, convert to 3 channel
+					style = skimage.color.gray2rgb(style)
+					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
+				style = np.expand_dims(style, axis=0)
+				style = style[...,0:3]
+				# print(style.shape)
+
+				# TODO: Random augment the style
 				# Resize if necessary 
 				# style = skimage.transform.resize
 
@@ -91,18 +118,20 @@ class ImageDataFlow(RNGDataFlow):
 
 				image = scipy.ndimage.interpolation.rotate(image, 
 					angle=degrees, 
-					axes=(1, 2), 
+					axes=(0, 1), 
 					reshape=False, #If reshape is true, the output shape is adapted so that the input 
-					#array is contained completely in the output. Default is True
-					order=3, mode='reflect')
+								   #array is contained completely in the output. Default is True
+					order=3, 
+					mode='reflect')
 
-				else:
-					# Adjust via callback 
-					# Rotate 360 degree
-					pass
-				yield [image.astype(np.float32), 
-				   	   style.astype(np.float32), 
-				   	   ]
+			else:
+				# Adjust via callback 
+				# Rotate 360 degree
+				pass
+
+			yield [image.astype(np.float32), 
+				   style.astype(np.float32), 
+				   ]
 ####################################################################################################
 def get_data(image_path, style_path, size=EPOCH_SIZE):
 	ds_train = ImageDataFlow(image_path,
@@ -207,7 +236,7 @@ def residual_dec(x, chan, first=False):
 
 ###############################################################################
 @auto_reuse_variable_scope
-def arch_generator(img, last_dim=1):
+def arch_generator(img, last_dim=3):
 	assert img is not None
 	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=2, padding='SAME'):
 		e0 = residual_enc('e0', img, NB_FILTERS*1)
@@ -228,14 +257,172 @@ def arch_generator(img, last_dim=1):
 ####################################################################################################
 class Model(ModelDesc):
 	def _get_inputs(self):
-		pass
+		return [
+			InputDesc(tf.float32, (None, DIMY, DIMX, DIMZ), 'image'), # un comment line image = np.expand_dims
+			# InputDesc(tf.float32, (DIMZ, DIMY, DIMX,    1), 'image'),
+			InputDesc(tf.float32, (None, DIMY, DIMX,    3), 'style'),
+			]
+	#FusionNet
+	@auto_reuse_variable_scope
+	def generator(self, img, last_dim=3):
+		assert img is not None
+		return arch_generator(img, last_dim=last_dim)
 
 	def _build_graph(self, inputs):
-		pass
+		G = tf.get_default_graph() # For round
+		tf.local_variables_initializer()
+		tf.global_variables_initializer()
+		I, S = inputs # Get the image I and style S
+
+		# Convert to range tanh
+		I = tf_2tanh(I)
+		S = tf_2tanh(S)
+
+		with argscope([Conv2D, Deconv2D, FullyConnected],
+					  W_init=tf.truncated_normal_initializer(stddev=0.02),
+					  use_bias=False), \
+				argscope(BatchNorm, gamma_init=tf.random_uniform_initializer()), \
+				argscope([Conv2D, Deconv2D, BatchNorm], data_format='NHWC'), \
+				argscope([Conv2D], dilation_rate=1):
+
+			R = self.generator(I, last_dim=3) # Generate the rendering from image I
+
+
+		# Calculating loss goes here
+		def additional_losses(a, b):
+			VGG_MEAN = np.array([123.68, 116.779, 103.939])  # RGB
+			VGG_MEAN_TENSOR = tf.constant(VGG_MEAN, dtype=tf.float32)
+
+			def normalize(v):
+				assert isinstance(v, tf.Tensor)
+				v.get_shape().assert_has_rank(4)
+				return v / tf.reduce_mean(v, axis=[1, 2, 3], keepdims=True)
+
+
+			def gram_matrix(v):
+				assert isinstance(v, tf.Tensor)
+				v.get_shape().assert_has_rank(4)
+				dim = v.get_shape().as_list()
+				v = tf.reshape(v, [-1, dim[1] * dim[2], dim[3]])
+				return tf.matmul(v, v, transpose_a=True)
+	
+			with tf.variable_scope('VGG19'):
+				x = tf.concat([a, b], axis=0)
+				#x = tf.reshape(x, [2 * BATCH_SIZE, SHAPE_LR * 4, SHAPE_LR * 4, 3]) * 255.0
+				x = tf_2imag(x) # convert to range image
+				x = x - VGG_MEAN_TENSOR
+				# VGG 19
+				with varreplace.freeze_variables():
+					with argscope(Conv2D, kernel_shape=3, nl=tf.nn.relu):
+						conv1_1 = Conv2D('conv1_1', x, 64)
+						conv1_2 = Conv2D('conv1_2', conv1_1, 64)
+						pool1 = MaxPooling('pool1', conv1_2, 2)  # 64
+						conv2_1 = Conv2D('conv2_1', pool1, 128)
+						conv2_2 = Conv2D('conv2_2', conv2_1, 128)
+						pool2 = MaxPooling('pool2', conv2_2, 2)  # 32
+						conv3_1 = Conv2D('conv3_1', pool2, 256)
+						conv3_2 = Conv2D('conv3_2', conv3_1, 256)
+						conv3_3 = Conv2D('conv3_3', conv3_2, 256)
+						conv3_4 = Conv2D('conv3_4', conv3_3, 256)
+						pool3 = MaxPooling('pool3', conv3_4, 2)  # 16
+						conv4_1 = Conv2D('conv4_1', pool3, 512)
+						conv4_2 = Conv2D('conv4_2', conv4_1, 512)
+						conv4_3 = Conv2D('conv4_3', conv4_2, 512)
+						conv4_4 = Conv2D('conv4_4', conv4_3, 512)
+						pool4 = MaxPooling('pool4', conv4_4, 2)  # 8
+						conv5_1 = Conv2D('conv5_1', pool4, 512)
+						conv5_2 = Conv2D('conv5_2', conv5_1, 512)
+						conv5_3 = Conv2D('conv5_3', conv5_2, 512)
+						conv5_4 = Conv2D('conv5_4', conv5_3, 512)
+						pool5 = MaxPooling('pool5', conv5_4, 2)  # 4
+
+			# perceptual loss
+			with tf.name_scope('perceptual_loss'):
+				pool2 = normalize(pool2)
+				pool5 = normalize(pool5)
+				phi_a_1, phi_b_1 = tf.split(pool2, 2, axis=0)
+				phi_a_2, phi_b_2 = tf.split(pool5, 2, axis=0)
+
+				logger.info('Create perceptual loss for layer {} with shape {}'.format(pool2.name, pool2.get_shape()))
+				pool2_loss = tf.losses.mean_squared_error(phi_a_1, phi_b_1, reduction=tf.losses.Reduction.MEAN)
+				logger.info('Create perceptual loss for layer {} with shape {}'.format(pool5.name, pool5.get_shape()))
+				pool5_loss = tf.losses.mean_squared_error(phi_a_2, phi_b_2, reduction=tf.losses.Reduction.MEAN)
+
+			# texture loss
+			with tf.name_scope('texture_loss'):
+				def texture_loss(x, p=16):
+					_, h, w, c = x.get_shape().as_list()
+					x = normalize(x)
+					assert h % p == 0 and w % p == 0
+					logger.info('Create texture loss for layer {} with shape {}'.format(x.name, x.get_shape()))
+
+					x = tf.space_to_batch_nd(x, [p, p], [[0, 0], [0, 0]])  # [b * ?, h/p, w/p, c]
+					x = tf.reshape(x, [p, p, -1, h // p, w // p, c])       # [p, p, b, h/p, w/p, c]
+					x = tf.transpose(x, [2, 3, 4, 0, 1, 5])                # [b * ?, p, p, c]
+					patches_a, patches_b = tf.split(x, 2, axis=0)          # each is b,h/p,w/p,p,p,c
+
+					patches_a = tf.reshape(patches_a, [-1, p, p, c])       # [b * ?, p, p, c]
+					patches_b = tf.reshape(patches_b, [-1, p, p, c])       # [b * ?, p, p, c]
+					return tf.losses.mean_squared_error(
+						gram_matrix(patches_a),
+						gram_matrix(patches_b),
+						reduction=tf.losses.Reduction.MEAN
+					)
+
+				texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
+				texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
+				texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
+
+			return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
+
+		additional_losses = additional_losses(R, S) # Concat Rendering and Style
+		with tf.name_scope('additional_losses'):
+			# see table 2 from appendix
+			loss = []
+			#loss.append(tf.multiply(GAN_FACTOR_PARAMETER, self.g_loss, name="loss_LA"))
+			loss.append(tf.multiply(2e-1, additional_losses[0], name="loss_LP1"))
+			loss.append(tf.multiply(2e-2, additional_losses[1], name="loss_LP2"))
+			loss.append(tf.multiply(3e-7, additional_losses[2], name="loss_LT1"))
+			loss.append(tf.multiply(1e-6, additional_losses[3], name="loss_LT2"))
+			loss.append(tf.multiply(1e-6, additional_losses[4], name="loss_LT3"))
+
+		if get_current_tower_context().is_training:
+			self.cost = tf.add_n(loss, name='cost')
+			add_moving_summary(self.cost)
+
+		# Visualization
+		def visualize(x, name='viz'):
+			viz = tf_2imag(I)
+			viz = tf.cast(tf.clip_by_value(viz, 0, 255), tf.uint8, name='viz')
+			tf.summary.image(name, viz, max_outputs=30) #max(30, BATCH_SIZE)
+		visualize(I, name='viz_image')
+		visualize(S, name='viz_style')
+		visualize(R, name='rendering')
 
 	def _get_optimizer(self):
-		pass
+		lr = tf.get_variable(
+			'learning_rate', initializer=1e-4, trainable=False)
+		opt = tf.train.AdamOptimizer(lr)
+		return opt
 
+###################################################################################################
+class VisualizeRunner(Callback):
+	def _setup_graph(self):
+		self.pred = self.trainer.get_predictor(
+			['image', 'style'], ['rendering'])
+
+	def _before_train(self):
+		global args
+		self.ds_train, self.ds_valid = get_data(args.image, args.style)
+
+	def _trigger(self):
+		for lst in self.ds_valid.get_data():
+			viz_valid = self.pred(lst)
+			viz_valid = np.squeeze(np.array(viz_valid))
+
+			#print viz_valid.shape
+
+			self.trainer.monitors.put_image('viz_valid', viz_valid)
 ###################################################################################################
 def apply(model_path, image_path, style_path):
 	pass
@@ -246,11 +433,14 @@ if __name__ == '__main__':
 	parser.add_argument('--gpu', 	help='comma separated list of GPU(s) to use.')
 	parser.add_argument('--load', 	help='load model')
 	parser.add_argument('--apply', 	action='store_true')
-	parser.add_argument('--image', 	help='path to the image. ', default="data/image")
-	parser.add_argument('--style',  help='path to the style. ', default="data/style")
+	parser.add_argument('--image', 	help='path to the image. ', default="data/image/")
+	parser.add_argument('--style',  help='path to the style. ', default="data/style/zebra_1")
 	parser.add_argument('--vgg19', 	help='load model', 			default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving the rendering', default=".", type=str)
 	args = parser.parse_args()
+	print(args)
+	parser.print_help()
+
 
 	if args.gpu:
 		os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -262,16 +452,17 @@ if __name__ == '__main__':
 		logger.auto_set_dir()
 
 		nr_tower = max(get_nr_gpu(), 1)
-		ds_train = QueueInput(get_data(args.data))
+		# ds_train, ds_valid = QueueInput(get_data(args.image, args.style))
+		ds_train, ds_valid = get_data(args.image, args.style)
 		model = Model()
 
 		if args.load:
-            session_init = SaverRestore(args.load)
-        else:
-            assert os.path.isfile(args.vgg19)
-            param_dict = dict(np.load(args.vgg19))
-            param_dict = {'VGG19/' + name: value for name, value in six.iteritems(param_dict)}
-            session_init = DictRestore(param_dict)
+			session_init = SaverRestore(args.load)
+		else:
+			assert os.path.isfile(args.vgg19)
+			param_dict = dict(np.load(args.vgg19))
+			param_dict = {'VGG19/' + name: value for name, value in six.iteritems(param_dict)}
+			session_init = DictRestore(param_dict)
 
 		
 			# Set up configuration
@@ -280,11 +471,11 @@ if __name__ == '__main__':
 				dataflow        =   ds_train,
 				callbacks       =   [
 					PeriodicTrigger(ModelSaver(), every_k_epochs=50),
-					PeriodicTrigger(VisualizeRunner(ds_valid), every_k_epochs=5),
+					PeriodicTrigger(VisualizeRunner(), every_k_epochs=5),
 					#PeriodicTrigger(InferenceRunner(ds_valid, [ScalarStats('loss_membr')]), every_k_epochs=5),
 					ScheduledHyperParamSetter('learning_rate', [(0, 2e-4), (100, 1e-4), (200, 1e-5), (300, 1e-6)], interp='linear')
 					#ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
-	            	#HumanHyperParamSetter('learning_rate'),
+					#HumanHyperParamSetter('learning_rate'),
 					],
 				max_epoch       =   500, 
 				session_init    =   session_init,
