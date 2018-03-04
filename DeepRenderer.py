@@ -38,9 +38,9 @@ DIMZ  = 256
 DIMC  = 1
 ####################################################################################################
 class ImageDataFlow(RNGDataFlow):
-	def __init__(self, volume_path, style_path, size, dtype='float32', isTrain=False, isValid=False):
+	def __init__(self, image_path, style_path, size, dtype='float32', isTrain=False, isValid=False):
 		self.dtype      	= dtype
-		self.volume_path   	= volume_path
+		self.image_path   	= image_path
 		self.style_path   	= style_path
 		self._size      	= size
 		self.isTrain    	= isTrain
@@ -56,15 +56,42 @@ class ImageDataFlow(RNGDataFlow):
 		#
 		# Read and store into pairs of images and labels
 		#
+		images = glob.glob(self.image_path + '/*.*')
+		styles = glob.glob(self.style_path + '/*.*')
+
+		if self._size==None:
+			self._size = len(images)
+
+		from natsort import natsorted
+		images = natsorted(images)
+		styles = natsorted(styles)
+
+
+		#
+		# Pick the image over size 
+		#
+		for k in range(self._size):
+			#
+			# Pick randomly a tuple of training instance
+			#
+			rand_image = np.random.randint(0, len(images))
+			rand_style = np.random.randint(0, len(styles))
+
+			if self.isTrain:
+			# Rotate and resample volume
+			else:
+				# Adjust via callback 
+				# Rotate 360 degree
+				pass
 ####################################################################################################
-def get_data(volume_path, style_path, size=EPOCH_SIZE):
-	ds_train = ImageDataFlow(volume_path,
+def get_data(image_path, style_path, size=EPOCH_SIZE):
+	ds_train = ImageDataFlow(image_path,
 							 style_path, 
 							 size, 
 							 isTrain=True
 							 )
 
-	ds_valid = ImageDataFlow(volume_path,
+	ds_valid = ImageDataFlow(image_path,
 							 style_path, 
 							 size, 
 							 isValid=True
@@ -88,7 +115,7 @@ class Model(ModelDesc):
 		pass
 
 ###################################################################################################
-def render(model_path, volume_path, style_path):
+def apply(model_path, image_path, style_path):
 	pass
 
 ###################################################################################################
@@ -96,8 +123,8 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', help='comma separated list of GPU(s) to use.')
 	parser.add_argument('--load', help='load model')
-	parser.add_argument('--render', action='store_true')
-	parser.add_argument('--volume', help='data')
+	parser.add_argument('--apply', action='store_true')
+	parser.add_argument('--image', help='data')
 	parser.add_argument('--style',  help='path to the style. ')
 	parser.add_argument('--vgg19', help='load model', default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving predicted high-res image', default=".", type=str)
@@ -106,14 +133,14 @@ if __name__ == '__main__':
 	if args.gpu:
 		os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
-	if args.render:
-		render(args.load, args.volume, args.style)
+	if args.apply:
+		apply(args.load, args.image, args.style)
 	else:
 		# Set the logger directory
 		logger.auto_set_dir()
 
 		nr_tower = max(get_nr_gpu(), 1)
-		train_data = QueueInput(get_data(args.data))
+		ds_train = QueueInput(get_data(args.data))
 		model = Model()
 
 		if args.load:
@@ -128,11 +155,11 @@ if __name__ == '__main__':
 			# Set up configuration
 			config = TrainConfig(
 				model           =   model, 
-				dataflow        =   train_data,
+				dataflow        =   ds_train,
 				callbacks       =   [
 					PeriodicTrigger(ModelSaver(), every_k_epochs=50),
-					PeriodicTrigger(VisualizeRunner(valid_data), every_k_epochs=5),
-					#PeriodicTrigger(InferenceRunner(valid_data, [ScalarStats('loss_membr')]), every_k_epochs=5),
+					PeriodicTrigger(VisualizeRunner(ds_valid), every_k_epochs=5),
+					#PeriodicTrigger(InferenceRunner(ds_valid, [ScalarStats('loss_membr')]), every_k_epochs=5),
 					ScheduledHyperParamSetter('learning_rate', [(0, 2e-4), (100, 1e-4), (200, 1e-5), (300, 1e-6)], interp='linear')
 					#ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
 	            	#HumanHyperParamSetter('learning_rate'),
