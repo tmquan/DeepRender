@@ -36,7 +36,47 @@ DIMX  = 256
 DIMY  = 256
 DIMZ  = 256
 DIMC  = 1
-###################################################################################################
+####################################################################################################
+class ImageDataFlow(RNGDataFlow):
+	def __init__(self, volume_path, style_path, size, dtype='float32', isTrain=False, isValid=False):
+		self.dtype      	= dtype
+		self.volume_path   	= volume_path
+		self.style_path   	= style_path
+		self._size      	= size
+		self.isTrain    	= isTrain
+		self.isValid    	= isValid
+
+	def size(self):
+		return self._size
+
+	def reset_state(self):
+		self.rng = get_rng(self)
+
+	def get_data(self, shuffle=True):
+		#
+		# Read and store into pairs of images and labels
+		#
+####################################################################################################
+def get_data(volume_path, style_path, size=EPOCH_SIZE):
+	ds_train = ImageDataFlow(volume_path,
+							 style_path, 
+							 size, 
+							 isTrain=True
+							 )
+
+	ds_valid = ImageDataFlow(volume_path,
+							 style_path, 
+							 size, 
+							 isValid=True
+							 )
+
+	ds_train.reset_state()
+	ds_valid.reset_state() 
+
+	return ds_train, ds_valid
+
+			
+####################################################################################################
 class Model(ModelDesc):
 	def _get_inputs(self):
 		pass
@@ -85,25 +125,25 @@ if __name__ == '__main__':
             session_init = DictRestore(param_dict)
 
 		
-		# Set up configuration
-		config = TrainConfig(
-			model           =   model, 
-			dataflow        =   train_data,
-			callbacks       =   [
-				PeriodicTrigger(ModelSaver(), every_k_epochs=50),
-				PeriodicTrigger(VisualizeRunner(valid_data), every_k_epochs=5),
-				#PeriodicTrigger(InferenceRunner(valid_data, [ScalarStats('loss_membr')]), every_k_epochs=5),
-				ScheduledHyperParamSetter('learning_rate', [(0, 2e-4), (100, 1e-4), (200, 1e-5), (300, 1e-6)], interp='linear')
-				#ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
-            	#HumanHyperParamSetter('learning_rate'),
-				],
-			max_epoch       =   500, 
-			session_init    =   session_init,
-			nr_tower        =   max(get_nr_gpu(), 1)
-			)
-	
-		# Train the model
-		SyncMultiGPUTrainer(config).train()
+			# Set up configuration
+			config = TrainConfig(
+				model           =   model, 
+				dataflow        =   train_data,
+				callbacks       =   [
+					PeriodicTrigger(ModelSaver(), every_k_epochs=50),
+					PeriodicTrigger(VisualizeRunner(valid_data), every_k_epochs=5),
+					#PeriodicTrigger(InferenceRunner(valid_data, [ScalarStats('loss_membr')]), every_k_epochs=5),
+					ScheduledHyperParamSetter('learning_rate', [(0, 2e-4), (100, 1e-4), (200, 1e-5), (300, 1e-6)], interp='linear')
+					#ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
+	            	#HumanHyperParamSetter('learning_rate'),
+					],
+				max_epoch       =   500, 
+				session_init    =   session_init,
+				nr_tower        =   max(get_nr_gpu(), 1)
+				)
+		
+			# Train the model
+			SyncMultiGPUTrainer(config).train()
 
 	
 	
