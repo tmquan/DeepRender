@@ -380,9 +380,10 @@ def arch_generator(img, last_dim=3):
 		d2 = residual_dec('d2', d3+e2, NB_FILTERS*2)
 		d1 = residual_dec('d1', d2+e1, NB_FILTERS*1)
 		d0 = residual_dec('d0', d1+e0, NB_FILTERS*1) 
-		dd =  (LinearWrap(d0)
+		dc = residual_dec('dc',    d0, DIMZ) 
+		dd =  (LinearWrap(dc)
 				.Conv2D('convlast', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
-		return dd
+		return dd, dc
 
 ####################################################################################################
 class Model(ModelDesc):
@@ -419,7 +420,7 @@ class Model(ModelDesc):
 				argscope([Conv2D, Deconv2D, BatchNorm], data_format='NHWC'), \
 				argscope([Conv2D], dilation_rate=1):
 
-			R = self.generator(I, last_dim=3) # Generate the rendering from image I
+			R, V = self.generator(I, last_dim=3) # Generate the rendering from image I
 
 
 		# Calculating loss goes here
@@ -520,6 +521,8 @@ class Model(ModelDesc):
 			loss.append(tf.multiply(1e-6, additional_losses[3], name="loss_LT2"))
 			loss.append(tf.multiply(1e-6, additional_losses[4], name="loss_LT3"))
 
+			loss.append(tf.reduce_mean(tf.abs(V-I), name="loss_abs"))
+
 		if get_current_tower_context().is_training:
 			self.cost = tf.add_n(loss, name='cost')
 			add_moving_summary(self.cost)
@@ -614,11 +617,11 @@ if __name__ == '__main__':
 				dataflow        =   ds_train,
 				callbacks       =   [
 					PeriodicTrigger(ModelSaver(), every_k_epochs=50),
-					PeriodicTrigger(VisualizeRunner(), every_k_epochs=5),
-					#PeriodicTrigger(InferenceRunner(ds_valid, [ScalarStats('loss_membr')]), every_k_epochs=5),
+					# PeriodicTrigger(VisualizeRunner(), every_k_epochs=5),
+					# PeriodicTrigger(InferenceRunner(ds_valid, [ScalarStats('loss_membr')]), every_k_epochs=5),
 					ScheduledHyperParamSetter('learning_rate', [(0, 2e-4), (100, 1e-4), (200, 1e-5), (300, 1e-6)], interp='linear')
-					#ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
-					#HumanHyperParamSetter('learning_rate'),
+					# ScheduledHyperParamSetter('learning_rate', [(30, 6e-6), (45, 1e-6), (60, 8e-7)]),
+					# HumanHyperParamSetter('learning_rate'),
 					],
 				max_epoch       =   500, 
 				session_init    =   session_init,
