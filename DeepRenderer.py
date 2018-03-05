@@ -105,9 +105,9 @@ class ImageDataFlow(RNGDataFlow):
 					style = skimage.color.gray2rgb(style)
 					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
 				seed = np.random.randint(0, 20152015)
-				style = self.random_flip(style, seed=seed)        
-				style = self.random_reverse(style, seed=seed)
-				style = self.random_square_rotate(style, seed=seed)           
+				# style = self.random_flip(style, seed=seed)        
+				# style = self.random_reverse(style, seed=seed)
+				# style = self.random_square_rotate(style, seed=seed)           
 				style = np.expand_dims(style, axis=0)
 				style = style[...,0:3]
 				# print(style.shape)
@@ -380,9 +380,10 @@ def arch_generator(img, last_dim=3):
 		d2 = residual_dec('d2', d3+e2, NB_FILTERS*2)
 		d1 = residual_dec('d1', d2+e1, NB_FILTERS*1)
 		d0 = residual_dec('d0', d1+e0, NB_FILTERS*1) 
-		dc = residual_dec('dc',    d0, DIMZ) 
-		dd =  (LinearWrap(dc)
-				.Conv2D('convlast', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
+		dd =  (LinearWrap(d0)
+				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
+		dc =  (LinearWrap(dd)
+				.Conv2D('dc',     DIMZ, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
 		return dd, dc
 
 ####################################################################################################
@@ -424,7 +425,7 @@ class Model(ModelDesc):
 
 
 		# Calculating loss goes here
-		def additional_losses(a, b):
+		def additional_losses(a, b, name='VGG19'):
 			VGG_MEAN = np.array([123.68, 116.779, 103.939])  # RGB
 			VGG_MEAN_TENSOR = tf.constant(VGG_MEAN, dtype=tf.float32)
 
@@ -441,7 +442,7 @@ class Model(ModelDesc):
 				v = tf.reshape(v, [-1, dim[1] * dim[2], dim[3]])
 				return tf.matmul(v, v, transpose_a=True)
 	
-			with tf.variable_scope('VGG19'):
+			with tf.variable_scope(name):
 				x = tf.concat([a, b], axis=0)
 				#x = tf.reshape(x, [2 * BATCH_SIZE, SHAPE_LR * 4, SHAPE_LR * 4, 3]) * 255.0
 				x = tf_2imag(x) # convert to range image
@@ -471,57 +472,78 @@ class Model(ModelDesc):
 						conv5_4 = Conv2D('conv5_4', conv5_3, 512)
 						pool5 = MaxPooling('pool5', conv5_4, 2)  # 4
 
-			# perceptual loss
-			with tf.name_scope('perceptual_loss'):
-				pool2 = normalize(pool2)
-				pool5 = normalize(pool5)
-				phi_a_1, phi_b_1 = tf.split(pool2, 2, axis=0)
-				phi_a_2, phi_b_2 = tf.split(pool5, 2, axis=0)
+				# perceptual loss
+				with tf.name_scope('perceptual_loss'):
+					pool2 = normalize(pool2)
+					pool5 = normalize(pool5)
+					phi_a_1, phi_b_1 = tf.split(pool2, 2, axis=0)
+					phi_a_2, phi_b_2 = tf.split(pool5, 2, axis=0)
 
-				logger.info('Create perceptual loss for layer {} with shape {}'.format(pool2.name, pool2.get_shape()))
-				pool2_loss = tf.losses.mean_squared_error(phi_a_1, phi_b_1, reduction=tf.losses.Reduction.MEAN)
-				logger.info('Create perceptual loss for layer {} with shape {}'.format(pool5.name, pool5.get_shape()))
-				pool5_loss = tf.losses.mean_squared_error(phi_a_2, phi_b_2, reduction=tf.losses.Reduction.MEAN)
+					logger.info('Create perceptual loss for layer {} with shape {}'.format(pool2.name, pool2.get_shape()))
+					pool2_loss = tf.losses.mean_squared_error(phi_a_1, phi_b_1, reduction=tf.losses.Reduction.MEAN)
+					logger.info('Create perceptual loss for layer {} with shape {}'.format(pool5.name, pool5.get_shape()))
+					pool5_loss = tf.losses.mean_squared_error(phi_a_2, phi_b_2, reduction=tf.losses.Reduction.MEAN)
 
-			# texture loss
-			with tf.name_scope('texture_loss'):
-				def texture_loss(x, p=16):
-					_, h, w, c = x.get_shape().as_list()
-					x = normalize(x)
-					assert h % p == 0 and w % p == 0
-					logger.info('Create texture loss for layer {} with shape {}'.format(x.name, x.get_shape()))
+				# texture loss
+				with tf.name_scope('texture_loss'):
+					def texture_loss(x, p=16):
+						_, h, w, c = x.get_shape().as_list()
+						x = normalize(x)
+						assert h % p == 0 and w % p == 0
+						logger.info('Create texture loss for layer {} with shape {}'.format(x.name, x.get_shape()))
 
-					x = tf.space_to_batch_nd(x, [p, p], [[0, 0], [0, 0]])  # [b * ?, h/p, w/p, c]
-					x = tf.reshape(x, [p, p, -1, h // p, w // p, c])       # [p, p, b, h/p, w/p, c]
-					x = tf.transpose(x, [2, 3, 4, 0, 1, 5])                # [b * ?, p, p, c]
-					patches_a, patches_b = tf.split(x, 2, axis=0)          # each is b,h/p,w/p,p,p,c
+						x = tf.space_to_batch_nd(x, [p, p], [[0, 0], [0, 0]])  # [b * ?, h/p, w/p, c]
+						x = tf.reshape(x, [p, p, -1, h // p, w // p, c])       # [p, p, b, h/p, w/p, c]
+						x = tf.transpose(x, [2, 3, 4, 0, 1, 5])                # [b * ?, p, p, c]
+						patches_a, patches_b = tf.split(x, 2, axis=0)          # each is b,h/p,w/p,p,p,c
 
-					patches_a = tf.reshape(patches_a, [-1, p, p, c])       # [b * ?, p, p, c]
-					patches_b = tf.reshape(patches_b, [-1, p, p, c])       # [b * ?, p, p, c]
-					return tf.losses.mean_squared_error(
-						gram_matrix(patches_a),
-						gram_matrix(patches_b),
-						reduction=tf.losses.Reduction.MEAN
-					)
+						patches_a = tf.reshape(patches_a, [-1, p, p, c])       # [b * ?, p, p, c]
+						patches_b = tf.reshape(patches_b, [-1, p, p, c])       # [b * ?, p, p, c]
+						return tf.losses.mean_squared_error(
+							gram_matrix(patches_a),
+							gram_matrix(patches_b),
+							reduction=tf.losses.Reduction.MEAN
+						)
 
-				texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
-				texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
-				texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
+					texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
+					texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
+					texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
 
-			return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
+				return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
 
-		additional_losses = additional_losses(R, S) # Concat Rendering and Style
+		additional_losses_2d = additional_losses(R, S, name='VGG19_2d') # Concat Rendering and Style
+
+		rand_indices_I = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
+		rand_indices_V = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
+		# I_extracted = I[:,:,:,rand_indices_I:rand_indices_I+3]
+		# V_extracted = V[:,:,:,rand_indices_V:rand_indices_V+3]
+		# additional_losses_3d = additional_losses(V_extracted, I_extracted) # Concat Rendering and Style
+
+		# tI = tf.transpose(I, [1, 2, 3, 0])
+		# tV = tf.transpose(V, [1, 2, 3, 0])
+		# cI = tf.image.grayscale_to_rgb(tI)
+		# cV = tf.image.grayscale_to_rgb(tV)
+		cI = tf.slice(I, [0, 0, 0, rand_indices_I], [1, DIMY, DIMX, 3])
+		cV = tf.slice(V, [0, 0, 0, rand_indices_V], [1, DIMY, DIMX, 3])
+
+		additional_losses_3d = additional_losses(cI, cV, name='VGG19_3d')
+
 		with tf.name_scope('additional_losses'):
 			# see table 2 from appendix
-			loss = []
+			loss = []	
 			#loss.append(tf.multiply(GAN_FACTOR_PARAMETER, self.g_loss, name="loss_LA"))
-			loss.append(tf.multiply(2e-1, additional_losses[0], name="loss_LP1"))
-			loss.append(tf.multiply(2e-2, additional_losses[1], name="loss_LP2"))
-			loss.append(tf.multiply(3e-7, additional_losses[2], name="loss_LT1"))
-			loss.append(tf.multiply(1e-6, additional_losses[3], name="loss_LT2"))
-			loss.append(tf.multiply(1e-6, additional_losses[4], name="loss_LT3"))
+			loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
+			loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
+			loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
+			loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
+			loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
 
-			loss.append(tf.reduce_mean(tf.abs(V-I), name="loss_abs"))
+			# loss.append(tf.multiply(1e+1, tf.reduce_mean(tf.abs(V-I)), name="loss_abs"))
+			loss.append(tf.multiply(2e-1, additional_losses_3d[0], name="loss_VP1"))
+			loss.append(tf.multiply(2e-2, additional_losses_3d[1], name="loss_VP2"))
+			loss.append(tf.multiply(3e-7, additional_losses_3d[2], name="loss_VT1"))
+			loss.append(tf.multiply(1e-6, additional_losses_3d[3], name="loss_VT2"))
+			loss.append(tf.multiply(1e-6, additional_losses_3d[4], name="loss_VT3"))
 
 		if get_current_tower_context().is_training:
 			self.cost = tf.add_n(loss, name='cost')
