@@ -104,6 +104,56 @@ class ImageDataFlow(RNGDataFlow):
 				if style.ndim == 2: # If gray image, convert to 3 channel
 					style = skimage.color.gray2rgb(style)
 					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
+				seed = np.random.randint(0, 20152015)
+				style = self.random_flip(style, seed=seed)        
+				style = self.random_reverse(style, seed=seed)
+				style = self.random_square_rotate(style, seed=seed)           
+				style = np.expand_dims(style, axis=0)
+				style = style[...,0:3]
+				# print(style.shape)
+
+				# TODO: Random augment the style
+				# Resize if necessary 
+				# style = skimage.transform.resize
+
+				# Rotate and resample volume
+				import scipy.ndimage.interpolation
+				degrees = np.random.uniform(low=0.0, high=360.0)
+
+				image = scipy.ndimage.interpolation.rotate(image, 
+					angle=degrees, 
+					axes=(1, 2), 
+					reshape=False, #If reshape is true, the output shape is adapted so that the input 
+								   #array is contained completely in the output. Default is True
+					order=3, 
+					mode='reflect')
+
+			else:
+				# Adjust via callback 
+				# Rotate 360 degree
+				# Read the 3D image
+				image = skimage.io.imread(images[rand_image])
+				if image.shape != [DIMZ, DIMY, DIMX]: # Pad the image
+					dimz, dimy, dimx = image.shape
+					patz, paty, patx = (DIMZ-dimz)/2, (DIMY-dimy)/2, (DIMX-dimx)/2
+					patz, paty, patx = int(patz), int(paty), int(patx)
+					image = np.pad(image, ((patz, patz), (paty, paty), (patx, patx)), 
+								   mode='constant', 
+								   constant_values=0, 
+						)
+				image = np.transpose(image, [1, 2, 0])
+				# image = np.expand_dims(image, axis=-1)
+				image = np.expand_dims(image, axis=0)
+
+				# Read the style
+				style = skimage.io.imread(styles[rand_style])
+				if style.ndim == 2: # If gray image, convert to 3 channel
+					style = skimage.color.gray2rgb(style)
+					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
+				seed = np.random.randint(0, 20152015)
+				style = self.random_flip(style, seed=seed)        
+				style = self.random_reverse(style, seed=seed)
+				style = self.random_square_rotate(style, seed=seed)           
 				style = np.expand_dims(style, axis=0)
 				style = style[...,0:3]
 				# print(style.shape)
@@ -124,14 +174,94 @@ class ImageDataFlow(RNGDataFlow):
 					order=3, 
 					mode='reflect')
 
-			else:
-				# Adjust via callback 
-				# Rotate 360 degree
-				pass
-
 			yield [image.astype(np.float32), 
 				   style.astype(np.float32), 
 				   ]
+	def random_flip(self, image, seed=None):
+		assert ((image.ndim == 2) | (image.ndim == 3))
+		if seed:
+			np.random.seed(seed)
+		random_flip = np.random.randint(1,5)
+		if random_flip==1:
+			flipped = image[...,::1,::-1,:]
+			image = flipped
+		elif random_flip==2:
+			flipped = image[...,::-1,::1,:]
+			image = flipped
+		elif random_flip==3:
+			flipped = image[...,::-1,::-1,:]
+			image = flipped
+		elif random_flip==4:
+			flipped = image
+			image = flipped
+		return image
+
+	def random_reverse(self, image, seed=None):
+		assert ((image.ndim == 2) | (image.ndim == 3))
+		if seed:
+			np.random.seed(seed)
+		random_reverse = np.random.randint(1,3)
+		if random_reverse==1:
+			reverse = image[::1,...]
+		elif random_reverse==2:
+			reverse = image[::-1,...]
+		image = reverse
+		return image
+
+	def random_square_rotate(self, image, seed=None):
+		assert ((image.ndim == 2) | (image.ndim == 3))
+		if seed:
+			np.random.seed(seed)        
+		random_rotatedeg = 90*np.random.randint(0,4)
+		rotated = image.copy()
+		from scipy.ndimage.interpolation import rotate
+		if image.ndim==2:
+			rotated = rotate(image, random_rotatedeg, axes=(0,1))
+		elif image.ndim==3:
+			rotated = rotate(image, random_rotatedeg, axes=(0,1)) # Channel
+		image = rotated
+		return image
+				
+	def random_elastic(self, image, seed=None):
+		assert ((image.ndim == 2) | (image.ndim == 3))
+		old_shape = image.shape
+
+		if image.ndim==2:
+			image = np.expand_dims(image, axis=0) # Make 3D
+		new_shape = image.shape
+		dimx, dimy = new_shape[1], new_shape[2]
+		size = np.random.randint(4,16) #4,32
+		ampl = np.random.randint(2, 5) #4,8
+		du = np.random.uniform(-ampl, ampl, size=(size, size)).astype(np.float32)
+		dv = np.random.uniform(-ampl, ampl, size=(size, size)).astype(np.float32)
+		# Done distort at boundary
+		du[ 0,:] = 0
+		du[-1,:] = 0
+		du[:, 0] = 0
+		du[:,-1] = 0
+		dv[ 0,:] = 0
+		dv[-1,:] = 0
+		dv[:, 0] = 0
+		dv[:,-1] = 0
+		import cv2
+		from scipy.ndimage.interpolation    import map_coordinates
+		# Interpolate du
+		DU = cv2.resize(du, (new_shape[1], new_shape[2])) 
+		DV = cv2.resize(dv, (new_shape[1], new_shape[2])) 
+		X, Y = np.meshgrid(np.arange(new_shape[1]), np.arange(new_shape[2]))
+		indices = np.reshape(Y+DV, (-1, 1)), np.reshape(X+DU, (-1, 1))
+		
+		warped = image.copy()
+		for z in range(new_shape[0]): #Loop over the channel
+			# print z
+			imageZ = np.squeeze(image[z,...])
+			flowZ  = map_coordinates(imageZ, indices, order=0).astype(np.float32)
+
+			warpedZ = flowZ.reshape(image[z,...].shape)
+			warped[z,...] = warpedZ     
+		warped = np.reshape(warped, old_shape)
+		return warped
+
 ####################################################################################################
 def get_data(image_path, style_path, size=EPOCH_SIZE):
 	ds_train = ImageDataFlow(image_path,
@@ -274,6 +404,10 @@ class Model(ModelDesc):
 		tf.global_variables_initializer()
 		I, S = inputs # Get the image I and style S
 
+		print(I)
+		print(S)
+		
+
 		# Convert to range tanh
 		I = tf_2tanh(I)
 		S = tf_2tanh(S)
@@ -392,16 +526,16 @@ class Model(ModelDesc):
 
 		# Visualization
 		def visualize(x, name='viz'):
-			viz = tf_2imag(I)
-			viz = tf.cast(tf.clip_by_value(viz, 0, 255), tf.uint8, name='viz')
+			viz = tf_2imag(x)
+			viz = tf.cast(tf.clip_by_value(viz, 0, 255), tf.uint8, name=name)
 			tf.summary.image(name, viz, max_outputs=30) #max(30, BATCH_SIZE)
-		visualize(I, name='viz_image')
+
+		visualize(tf.transpose(I[...,128-5:128+5,:,:], [1, 2, 3, 0]), name='viz_image')
 		visualize(S, name='viz_style')
 		visualize(R, name='rendering')
 
 	def _get_optimizer(self):
-		lr = tf.get_variable(
-			'learning_rate', initializer=1e-4, trainable=False)
+		lr  = tf.get_variable('learning_rate', initializer=1e-4, trainable=False)
 		opt = tf.train.AdamOptimizer(lr)
 		return opt
 
@@ -454,6 +588,15 @@ if __name__ == '__main__':
 		nr_tower = max(get_nr_gpu(), 1)
 		# ds_train, ds_valid = QueueInput(get_data(args.image, args.style))
 		ds_train, ds_valid = get_data(args.image, args.style)
+
+		ds_train = PrintData(ds_train)
+		ds_valid = PrintData(ds_valid)
+
+		ds_train = PrefetchDataZMQ(ds_train, 8)
+		ds_valid = PrefetchDataZMQ(ds_valid, 1)
+		
+
+
 		model = Model()
 
 		if args.load:
