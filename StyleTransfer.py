@@ -113,9 +113,9 @@ class ImageDataFlow(RNGDataFlow):
 					style = skimage.color.gray2rgb(style)
 					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
 				seeds = np.random.randint(0, 20152015)
-				style = self.random_flip(style, seed=seeds)        
-				style = self.random_reverse(style, seed=seeds)
-				style = self.random_square_rotate(style, seed=seeds)           
+				# style = self.random_flip(style, seed=seeds)        
+				# style = self.random_reverse(style, seed=seeds)
+				# style = self.random_square_rotate(style, seed=seeds)           
 				style = np.expand_dims(style, axis=0)
 				style = style[...,0:3]
 				# TODO: Random augment the style
@@ -404,6 +404,7 @@ def arch_generator(image, style, last_dim=3):
 	assert image is not None
 	assert style is not None
 	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=2, padding='SAME'):
+		# image = tf.concat([image, style], axis=-1)
 		i0 = residual_enc('i0', image, NB_FILTERS*1)
 		i1 = residual_enc('i1',    i0, NB_FILTERS*2)
 		i2 = residual_enc('i2',    i1, NB_FILTERS*4)
@@ -455,8 +456,8 @@ class Model(ModelDesc):
 				argscope(BatchNorm, gamma_init=tf.random_uniform_initializer()), \
 				argscope([Conv2D, Deconv2D, BatchNorm], data_format='NHWC'), \
 				argscope([Conv2D], dilation_rate=1):
-
-			R = self.generator(I, S, last_dim=3) # Generate the rendering from image I
+			with tf.variable_scope('gen'):
+				R = self.generator(I, S, last_dim=3) # Generate the rendering from image I
 
 
 		# Calculating loss goes here
@@ -553,7 +554,7 @@ class Model(ModelDesc):
 
 				return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
 
-		additional_losses_2d = additional_losses(R, I, S, name='VGG19_2d') # Concat Rendering and Style
+		additional_losses_2d = additional_losses(R, I, S, name='VGG19') # Concat Rendering and Style
 
 		# rand_indices_I = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
 		# rand_indices_V = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
@@ -592,6 +593,15 @@ class Model(ModelDesc):
 			# loss.append(tf.multiply(1e+1*3e-7, additional_losses_3d[2], name="loss_VT1"))
 			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[3], name="loss_VT2"))
 			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[4], name="loss_VT3"))
+
+		wd_g = regularize_cost('gen/.*/W', 		l2_regularizer(1e-5), name='G_regularize')
+		add_moving_summary(wd_g)
+		loss.append(tf.multiply(1e+1, wd_g, name="regularizer"))		
+
+
+		tv_loss = tf.reduce_mean(tf.image.total_variation(R), name='tv_loss')
+		add_moving_summary(tv_loss)
+		loss.append(tf.multiply(1e-6, tv_loss, name="total_variation"))		
 
 		if get_current_tower_context().is_training:
 			self.cost = tf.add_n(loss, name='cost')
@@ -641,7 +651,7 @@ if __name__ == '__main__':
 	parser.add_argument('--gpu', 	help='comma separated list of GPU(s) to use.')
 	parser.add_argument('--load', 	help='load model')
 	parser.add_argument('--apply', 	action='store_true')
-	parser.add_argument('--image', 	help='path to the image. ', default="data/image_hugo/")
+	parser.add_argument('--image', 	help='path to the image. ', default="data/image_mountain/")
 	parser.add_argument('--style',  help='path to the style. ', default="data/style_chinese/")
 	parser.add_argument('--vgg19', 	help='load model', 			default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving the rendering', default=".", type=str)
