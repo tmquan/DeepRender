@@ -37,8 +37,8 @@ from tensorpack.utils import logger
 EPOCH_SIZE = 100
 NB_FILTERS = 32	  # channel size
 
-DIMX  = 512
-DIMY  = 512
+DIMX  = 256
+DIMY  = 256
 DIMZ  = 3
 DIMC  = 1
 ####################################################################################################
@@ -101,9 +101,9 @@ class ImageDataFlow(RNGDataFlow):
 					image = skimage.color.gray2rgb(image)
 					# image = cv2.cvtColor(image, cv2.GRAY2RGB)
 				seedi = np.random.randint(0, 20152015)
-				image = self.random_flip(image, seed=seedi)        
-				image = self.random_reverse(image, seed=seedi)
-				image = self.random_square_rotate(image, seed=seedi)           
+				# image = self.random_flip(image, seed=seedi)        
+				# image = self.random_reverse(image, seed=seedi)
+				# image = self.random_square_rotate(image, seed=seedi)           
 				image = np.expand_dims(image, axis=0)
 				image = image[...,0:3]
 
@@ -151,9 +151,9 @@ class ImageDataFlow(RNGDataFlow):
 					image = skimage.color.gray2rgb(image)
 					# image = cv2.cvtColor(image, cv2.GRAY2RGB)
 				seedi = np.random.randint(0, 20152015)
-				image = self.random_flip(image, seed=seedi)        
-				image = self.random_reverse(image, seed=seedi)
-				image = self.random_square_rotate(image, seed=seedi)           
+				# image = self.random_flip(image, seed=seedi)        
+				# image = self.random_reverse(image, seed=seedi)
+				# image = self.random_square_rotate(image, seed=seedi)           
 				image = np.expand_dims(image, axis=0)
 				image = image[...,0:3]
 
@@ -163,9 +163,9 @@ class ImageDataFlow(RNGDataFlow):
 					style = skimage.color.gray2rgb(style)
 					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
 				seeds = np.random.randint(0, 20152015)
-				style = self.random_flip(style, seed=seeds)        
-				style = self.random_reverse(style, seed=seeds)
-				style = self.random_square_rotate(style, seed=seeds)           
+				# style = self.random_flip(style, seed=seeds)        
+				# style = self.random_reverse(style, seed=seeds)
+				# style = self.random_square_rotate(style, seed=seeds)           
 				style = np.expand_dims(style, axis=0)
 				style = style[...,0:3]
 				# print(style.shape)
@@ -409,16 +409,16 @@ def arch_generator(image, style, last_dim=3):
 		i2 = residual_enc('i2',    i1, NB_FILTERS*4)
 		i3 = residual_enc('i3',    i2, NB_FILTERS*8)
 
-		s0 = residual_enc('s0', style, NB_FILTERS*1)
-		s1 = residual_enc('s1',    s0, NB_FILTERS*2)
-		s2 = residual_enc('s2',    s1, NB_FILTERS*4)
-		s3 = residual_enc('s3',    s2, NB_FILTERS*8)
+		# s0 = residual_enc('s0', style, NB_FILTERS*1)
+		# s1 = residual_enc('s1',    s0, NB_FILTERS*2)
+		# s2 = residual_enc('s2',    s1, NB_FILTERS*4)
+		# s3 = residual_enc('s3',    s2, NB_FILTERS*8)
 
-		d4 = tf.concat([i3, s3], axis=-1)
-		d3 = residual_dec('d3', d4, NB_FILTERS*4)
-		d2 = residual_dec('d2', d3, NB_FILTERS*2)
-		d1 = residual_dec('d1', d2, NB_FILTERS*1)
-		d0 = residual_dec('d0', d1, NB_FILTERS*1) 
+		# d4 = tf.concat([i3, s3], axis=-1)
+		d3 = residual_dec('d3',    i3, NB_FILTERS*4)
+		d2 = residual_dec('d2', d3+i2, NB_FILTERS*2)
+		d1 = residual_dec('d1', d2+i1, NB_FILTERS*1)
+		d0 = residual_dec('d0', d1+i0, NB_FILTERS*1) 
 		dd =  (LinearWrap(d0)
 				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
 		return dd
@@ -580,6 +580,12 @@ class Model(ModelDesc):
 			loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
 			loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
 
+			# loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
+			# loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
+			# loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
+			# loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
+			# loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
+
 			# # loss.append(tf.multiply(1e+1, tf.reduce_mean(tf.abs(V-I)), name="loss_abs"))
 			# loss.append(tf.multiply(1e+1*2e-1, additional_losses_3d[0], name="loss_VP1"))
 			# loss.append(tf.multiply(1e+1*2e-2, additional_losses_3d[1], name="loss_VP2"))
@@ -636,7 +642,7 @@ if __name__ == '__main__':
 	parser.add_argument('--load', 	help='load model')
 	parser.add_argument('--apply', 	action='store_true')
 	parser.add_argument('--image', 	help='path to the image. ', default="data/image_hugo/")
-	parser.add_argument('--style',  help='path to the style. ', default="data/style_edtaonisl/")
+	parser.add_argument('--style',  help='path to the style. ', default="data/style_chinese/")
 	parser.add_argument('--vgg19', 	help='load model', 			default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving the rendering', default=".", type=str)
 	args = parser.parse_args()
