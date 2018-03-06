@@ -113,9 +113,9 @@ class ImageDataFlow(RNGDataFlow):
 					style = skimage.color.gray2rgb(style)
 					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
 				seeds = np.random.randint(0, 20152015)
-				# style = self.random_flip(style, seed=seeds)        
-				# style = self.random_reverse(style, seed=seeds)
-				# style = self.random_square_rotate(style, seed=seeds)           
+				style = self.random_flip(style, seed=seeds)        
+				style = self.random_reverse(style, seed=seeds)
+				style = self.random_square_rotate(style, seed=seeds)           
 				style = np.expand_dims(style, axis=0)
 				style = style[...,0:3]
 				# TODO: Random augment the style
@@ -544,15 +544,15 @@ class Model(ModelDesc):
 							reduction=tf.losses.Reduction.MEAN
 						)
 
-					texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
-					texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
-					texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
+					texture_loss_conv2_2 = tf.identity(texture_loss(conv2_2), name='normalized_conv2_2')
+					texture_loss_conv3_3 = tf.identity(texture_loss(conv3_3), name='normalized_conv3_3')
+					texture_loss_conv4_4 = tf.identity(texture_loss(conv4_4), name='normalized_conv4_4')
 
-					add_moving_summary(texture_loss_conv1_1)
-					add_moving_summary(texture_loss_conv2_1)
-					add_moving_summary(texture_loss_conv3_1)
+					add_moving_summary(texture_loss_conv2_2)
+					add_moving_summary(texture_loss_conv3_3)
+					add_moving_summary(texture_loss_conv4_4)
 
-				return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
+				return [pool2_loss, pool5_loss, texture_loss_conv2_2, texture_loss_conv3_3, texture_loss_conv4_4]
 
 		additional_losses_2d = additional_losses(R, I, S, name='VGG19') # Concat Rendering and Style
 
@@ -575,6 +575,7 @@ class Model(ModelDesc):
 			# see table 2 from appendix
 			loss = []	
 			#loss.append(tf.multiply(GAN_FACTOR_PARAMETER, self.g_loss, name="loss_LA"))
+
 			loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
 			loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
 			loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
@@ -594,9 +595,9 @@ class Model(ModelDesc):
 			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[3], name="loss_VT2"))
 			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[4], name="loss_VT3"))
 
-		wd_g = regularize_cost('gen/.*/W', 		l2_regularizer(1e-5), name='G_regularize')
-		add_moving_summary(wd_g)
-		loss.append(tf.multiply(1e+1, wd_g, name="regularizer"))		
+		# wd_g = regularize_cost('gen/.*/W', 		l2_regularizer(1e-5), name='G_regularize')
+		# add_moving_summary(wd_g)
+		# loss.append(tf.multiply(1e+1, wd_g, name="regularizer"))		
 
 
 		tv_loss = tf.reduce_mean(tf.image.total_variation(R), name='tv_loss')
