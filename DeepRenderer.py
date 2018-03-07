@@ -43,10 +43,11 @@ DIMZ  = 256
 DIMC  = 1
 ####################################################################################################
 class ImageDataFlow(RNGDataFlow):
-	def __init__(self, image_path, style_path, size, dtype='float32', isTrain=False, isValid=False):
+	def __init__(self, image_path, style_path, size, alpha_path=None, dtype='float32', isTrain=False, isValid=False):
 		self.dtype      	= dtype
 		self.image_path   	= image_path
 		self.style_path   	= style_path
+		self.alpha_path   	= alpha_path
 		self._size      	= size
 		self.isTrain    	= isTrain
 		self.isValid    	= isValid
@@ -85,7 +86,7 @@ class ImageDataFlow(RNGDataFlow):
 			rand_style = np.random.randint(0, len(styles))
 
 			if self.isTrain:
-				# Read the 3D image
+								# Read the 3D image
 				image = skimage.io.imread(images[rand_image])
 				if image.shape != [DIMZ, DIMY, DIMX]: # Pad the image
 					dimz, dimy, dimx = image.shape
@@ -95,77 +96,12 @@ class ImageDataFlow(RNGDataFlow):
 								   mode='constant', 
 								   constant_values=0, 
 						)
+				# Make dimz is the last channel
 				image = np.transpose(image, [1, 2, 0])
-				# image = np.expand_dims(image, axis=-1)
-				image = np.expand_dims(image, axis=0)
 
-				# Read the style
-				style = skimage.io.imread(styles[rand_style])
-				if style.ndim == 2: # If gray image, convert to 3 channel
-					style = skimage.color.gray2rgb(style)
-					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
-				seed = np.random.randint(0, 20152015)
-				# style = self.random_flip(style, seed=seed)        
-				# style = self.random_reverse(style, seed=seed)
-				# style = self.random_square_rotate(style, seed=seed)           
-				style = np.expand_dims(style, axis=0)
-				style = style[...,0:3]
-				# print(style.shape)
-
-				# TODO: Random augment the style
-				# Resize if necessary 
-				# style = skimage.transform.resize
-
-				# Rotate and resample volume
+				# Rotate and resample volume using the plane of first two axes
 				import scipy.ndimage.interpolation
 				degrees = np.random.uniform(low=0.0, high=360.0)
-
-				image = scipy.ndimage.interpolation.rotate(image, 
-					angle=degrees, 
-					axes=(1, 2), 
-					reshape=False, #If reshape is true, the output shape is adapted so that the input 
-								   #array is contained completely in the output. Default is True
-					order=3, 
-					mode='reflect')
-
-			else:
-				# Adjust via callback 
-				# Rotate 360 degree
-				# Read the 3D image
-				image = skimage.io.imread(images[rand_image])
-				if image.shape != [DIMZ, DIMY, DIMX]: # Pad the image
-					dimz, dimy, dimx = image.shape
-					patz, paty, patx = (DIMZ-dimz)/2, (DIMY-dimy)/2, (DIMX-dimx)/2
-					patz, paty, patx = int(patz), int(paty), int(patx)
-					image = np.pad(image, ((patz, patz), (paty, paty), (patx, patx)), 
-								   mode='constant', 
-								   constant_values=0, 
-						)
-				image = np.transpose(image, [1, 2, 0])
-				# image = np.expand_dims(image, axis=-1)
-				image = np.expand_dims(image, axis=0)
-
-				# Read the style
-				style = skimage.io.imread(styles[rand_style])
-				if style.ndim == 2: # If gray image, convert to 3 channel
-					style = skimage.color.gray2rgb(style)
-					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
-				seed = np.random.randint(0, 20152015)
-				style = self.random_flip(style, seed=seed)        
-				style = self.random_reverse(style, seed=seed)
-				style = self.random_square_rotate(style, seed=seed)           
-				style = np.expand_dims(style, axis=0)
-				style = style[...,0:3]
-				# print(style.shape)
-
-				# TODO: Random augment the style
-				# Resize if necessary 
-				# style = skimage.transform.resize
-
-				# Rotate and resample volume
-				import scipy.ndimage.interpolation
-				degrees = np.random.uniform(low=0.0, high=360.0)
-
 				image = scipy.ndimage.interpolation.rotate(image, 
 					angle=degrees, 
 					axes=(0, 1), 
@@ -173,6 +109,133 @@ class ImageDataFlow(RNGDataFlow):
 								   #array is contained completely in the output. Default is True
 					order=3, 
 					mode='reflect')
+
+				#
+				# If not specify alpha value
+				# Generate random alpha value
+				#
+				if alpha_path==None: 
+					# Generate random alpha value
+					table = np.random.uniform(low=0, high=256)
+					# table[0] = 0.1
+					# table[1] = 0.6
+					# ..
+					# table[255] = 0.2
+
+				def lut(color):
+					return table(color)
+				color_s = image.copy() 		# Construct the per-voxel color (or resample _s)
+				alpha_s = map(lut, color)	# Construct the per-voxel alpha (or resample _s)
+
+				# Front-to-back compositing
+				#
+				# color_o =  color_s*alpha_s*(1-alpha_i) + color_i
+				# alpha_o =          alpha_s*(1-alpha_i) + alpha_i
+				#
+				# color   =  color_s*alpha_s*(1-alpha) + color
+				# alpha   =          alpha_s*(1-alpha) + alpha
+				color = np.zeros(DIMY, DIMX)
+				alpha = np.zeros(DIMY, DIMX)
+
+				for z in range(0, 256, 1): # March from 0 to 255
+					c = color_s[...,z]
+					a = alpha_s[...,z]
+					color = c * a * (1-alpha) + color
+					alpha =     a * (1-alpha) + alpha
+					pass
+
+				# Back-to-front compositing
+				# color_o = (1-alpha_i)*color_s + color_i
+				# alpha_o = (1-alpha_i)*alpha_s + alpha_i
+				#
+				# color = (1-alpha)*color_s + color
+				# alpha = (1-alpha)*alpha_s + alpha
+				# Doing projection
+				for z in range(255, -1, -1): # March from 255 to 0
+					c = color_s[...,z]
+					a = alpha_s[...,z]
+					color = c * (1-alpha) + color
+					alpha = a * (1-alpha) + alpha
+					pass
+
+				# Create the img2d image
+				img2d = np.zeros(DIMY, DIMX, 4)
+				color = skimage.color.gray2rgb(color)
+				img2d[...,0:3] = color
+				img2d[...,3:4] = alpha
+
+				# Expand the volume to 4D
+				image = np.expand_dims(image, axis=-1) # Expand to make bxyz
+				img2d = np.expand_dims(img2d, axis=-1)
+
+				# Read the style
+				style = skimage.io.imread(styles[rand_style])
+				if style.ndim == 2: # If gray image, convert to 3 channel
+					style = skimage.color.gray2rgb(style)
+					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
+				seeds = np.random.randint(0, 20152015)
+				style = self.random_flip(style, seed=seeds)        
+				style = self.random_reverse(style, seed=seeds)
+				style = self.random_square_rotate(style, seed=seeds)           
+				style = np.expand_dims(style, axis=0)
+				style = style[...,0:3]
+				# TODO: Random augment the style
+				# Resize if necessary 
+				# style = skimage.transform.resize
+
+				
+
+			else:
+				# Read the 3D image
+				image = skimage.io.imread(images[rand_image])
+				# if image.shape != [DIMZ, DIMY, DIMX]: # Pad the image
+				# 	dimz, dimy, dimx = image.shape
+				# 	patz, paty, patx = (DIMZ-dimz)/2, (DIMY-dimy)/2, (DIMX-dimx)/2
+				# 	patz, paty, patx = int(patz), int(paty), int(patx)
+				# 	image = np.pad(image, ((patz, patz), (paty, paty), (patx, patx)), 
+				# 				   mode='constant', 
+				# 				   constant_values=0, 
+				# 		)
+				# image = np.transpose(image, [1, 2, 0])
+				# image = np.expand_dims(image, axis=-1)
+				if image.ndim == 2: # If gray image, convert to 3 channel
+					image = skimage.color.gray2rgb(image)
+					# image = cv2.cvtColor(image, cv2.GRAY2RGB)
+				seedi = np.random.randint(0, 20152015)
+				# image = self.random_flip(image, seed=seedi)        
+				# image = self.random_reverse(image, seed=seedi)
+				# image = self.random_square_rotate(image, seed=seedi)           
+				image = np.expand_dims(image, axis=0)
+				image = image[...,0:3]
+
+				# Read the style
+				style = skimage.io.imread(styles[rand_style])
+				if style.ndim == 2: # If gray image, convert to 3 channel
+					style = skimage.color.gray2rgb(style)
+					# style = cv2.cvtColor(style, cv2.GRAY2RGB)
+				seeds = np.random.randint(0, 20152015)
+				# style = self.random_flip(style, seed=seeds)        
+				# style = self.random_reverse(style, seed=seeds)
+				# style = self.random_square_rotate(style, seed=seeds)           
+				style = np.expand_dims(style, axis=0)
+				style = style[...,0:3]
+				# print(style.shape)
+
+				# TODO: Random augment the style
+				# Resize if necessary 
+				# style = skimage.transform.resize
+
+				# # Rotate and resample volume
+				# import scipy.ndimage.interpolation
+				# degrees = np.random.uniform(low=0.0, high=360.0)
+
+				# image = scipy.ndimage.interpolation.rotate(image, 
+				# 	angle=degrees, 
+				# 	axes=(1, 2), 
+				# 	reshape=False, #If reshape is true, the output shape is adapted so that the input 
+				# 				   #array is contained completely in the output. Default is True
+				# 	order=3, 
+				# 	mode='reflect')
 
 			yield [image.astype(np.float32), 
 				   style.astype(np.float32), 
@@ -266,13 +329,13 @@ class ImageDataFlow(RNGDataFlow):
 def get_data(image_path, style_path, size=EPOCH_SIZE):
 	ds_train = ImageDataFlow(image_path,
 							 style_path, 
-							 size, 
+							 size=size, 
 							 isTrain=True
 							 )
 
 	ds_valid = ImageDataFlow(image_path,
 							 style_path, 
-							 size, 
+							 size=360, 
 							 isValid=True
 							 )
 
@@ -324,6 +387,8 @@ def residual(x, chan, first=False):
 				.Conv2D('conv2', chan, padding='SAME', dilation_rate=2)
 				.Conv2D('conv4', chan, padding='SAME', dilation_rate=4)				
 				.Conv2D('conv5', chan, padding='SAME', dilation_rate=8)
+				# .Conv2D('conv1', chan, padding='SAME', dilation_rate=1)
+				# .Conv2D('conv2', chan, padding='SAME', dilation_rate=1)
 				.Conv2D('conv0', chan, padding='SAME', nl=tf.identity)
 				.InstanceNorm('inorm')()) + input
 
@@ -365,27 +430,50 @@ def residual_dec(x, chan, first=False):
 		return x
 
 ###############################################################################
+# @auto_reuse_variable_scope
+# def arch_generator(img, last_dim=3):
+# 	assert img is not None
+# 	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=2, padding='SAME'):
+# 		e0 = residual_enc('e0', img, NB_FILTERS*1)
+# 		e1 = residual_enc('e1',  e0, NB_FILTERS*2)
+# 		e2 = residual_enc('e2',  e1, NB_FILTERS*4)
+
+# 		e3 = residual_enc('e3',  e2, NB_FILTERS*8)
+# 		# e3 = Dropout('dr', e3, 0.5)
+
+# 		d3 = residual_dec('d3',    e3, NB_FILTERS*4)
+# 		d2 = residual_dec('d2', d3+e2, NB_FILTERS*2)
+# 		d1 = residual_dec('d1', d2+e1, NB_FILTERS*1)
+# 		d0 = residual_dec('d0', d1+e0, NB_FILTERS*1) 
+# 		dd =  (LinearWrap(d0)
+# 				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
+# 		dc =  (LinearWrap(dd)
+# 				.Conv2D('dc',     DIMZ, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
+# 		return dd, dc
 @auto_reuse_variable_scope
-def arch_generator(img, last_dim=3):
-	assert img is not None
+def arch_generator(image, style, last_dim=3):
+	assert image is not None
+	assert style is not None
 	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=2, padding='SAME'):
-		e0 = residual_enc('e0', img, NB_FILTERS*1)
-		e1 = residual_enc('e1',  e0, NB_FILTERS*2)
-		e2 = residual_enc('e2',  e1, NB_FILTERS*4)
+		# image = tf.concat([image, style], axis=-1)
+		i0 = residual_enc('i0', image, NB_FILTERS*1)
+		i1 = residual_enc('i1',    i0, NB_FILTERS*2)
+		i2 = residual_enc('i2',    i1, NB_FILTERS*4)
+		i3 = residual_enc('i3',    i2, NB_FILTERS*8)
 
-		e3 = residual_enc('e3',  e2, NB_FILTERS*8)
-		# e3 = Dropout('dr', e3, 0.5)
+		# s0 = residual_enc('s0', style, NB_FILTERS*1)
+		# s1 = residual_enc('s1',    s0, NB_FILTERS*2)
+		# s2 = residual_enc('s2',    s1, NB_FILTERS*4)
+		# s3 = residual_enc('s3',    s2, NB_FILTERS*8)
 
-		d3 = residual_dec('d3',    e3, NB_FILTERS*4)
-		d2 = residual_dec('d2', d3+e2, NB_FILTERS*2)
-		d1 = residual_dec('d1', d2+e1, NB_FILTERS*1)
-		d0 = residual_dec('d0', d1+e0, NB_FILTERS*1) 
+		# d4 = tf.concat([i3, s3], axis=-1)
+		d3 = residual_dec('d3',    i3, NB_FILTERS*4)
+		d2 = residual_dec('d2', d3+i2, NB_FILTERS*2)
+		d1 = residual_dec('d1', d2+i1, NB_FILTERS*1)
+		d0 = residual_dec('d0', d1+i0, NB_FILTERS*1) 
 		dd =  (LinearWrap(d0)
 				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
-		dc =  (LinearWrap(dd)
-				.Conv2D('dc',     DIMZ, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
-		return dd, dc
-
+		return dd
 ####################################################################################################
 class Model(ModelDesc):
 	def _get_inputs(self):
@@ -394,11 +482,10 @@ class Model(ModelDesc):
 			# InputDesc(tf.float32, (DIMZ, DIMY, DIMX,    1), 'image'),
 			InputDesc(tf.float32, (None, DIMY, DIMX,    3), 'style'),
 			]
-	#FusionNet
+	#Fuse 2 branches of the image
 	@auto_reuse_variable_scope
-	def generator(self, img, last_dim=3):
-		assert img is not None
-		return arch_generator(img, last_dim=last_dim)
+	def generator(self, image, style, last_dim=3):
+		return arch_generator(image, style, last_dim=last_dim)
 
 	def _build_graph(self, inputs):
 		G = tf.get_default_graph() # For round
@@ -420,12 +507,12 @@ class Model(ModelDesc):
 				argscope(BatchNorm, gamma_init=tf.random_uniform_initializer()), \
 				argscope([Conv2D, Deconv2D, BatchNorm], data_format='NHWC'), \
 				argscope([Conv2D], dilation_rate=1):
-
-			R, V = self.generator(I, last_dim=3) # Generate the rendering from image I
+			with tf.variable_scope('gen'):
+				R = self.generator(I, S, last_dim=3) # Generate the rendering from image I
 
 
 		# Calculating loss goes here
-		def additional_losses(a, b, name='VGG19'):
+		def additional_losses(render, image, style, name='VGG19'):
 			VGG_MEAN = np.array([123.68, 116.779, 103.939])  # RGB
 			VGG_MEAN_TENSOR = tf.constant(VGG_MEAN, dtype=tf.float32)
 
@@ -443,7 +530,7 @@ class Model(ModelDesc):
 				return tf.matmul(v, v, transpose_a=True)
 	
 			with tf.variable_scope(name):
-				x = tf.concat([a, b], axis=0)
+				x = tf.concat([render, image, style], axis=0)
 				#x = tf.reshape(x, [2 * BATCH_SIZE, SHAPE_LR * 4, SHAPE_LR * 4, 3]) * 255.0
 				x = tf_2imag(x) # convert to range image
 				x = x - VGG_MEAN_TENSOR
@@ -476,13 +563,16 @@ class Model(ModelDesc):
 				with tf.name_scope('perceptual_loss'):
 					pool2 = normalize(pool2)
 					pool5 = normalize(pool5)
-					phi_a_1, phi_b_1 = tf.split(pool2, 2, axis=0)
-					phi_a_2, phi_b_2 = tf.split(pool5, 2, axis=0)
+					phi_a_1, phi_b_1, _ = tf.split(pool2, 3, axis=0) #split to render, image, _style
+					phi_a_2, phi_b_2, _ = tf.split(pool5, 3, axis=0) #split to render, image, _style
 
 					logger.info('Create perceptual loss for layer {} with shape {}'.format(pool2.name, pool2.get_shape()))
 					pool2_loss = tf.losses.mean_squared_error(phi_a_1, phi_b_1, reduction=tf.losses.Reduction.MEAN)
 					logger.info('Create perceptual loss for layer {} with shape {}'.format(pool5.name, pool5.get_shape()))
 					pool5_loss = tf.losses.mean_squared_error(phi_a_2, phi_b_2, reduction=tf.losses.Reduction.MEAN)
+
+					add_moving_summary(pool2_loss)
+					add_moving_summary(pool5_loss)
 
 				# texture loss
 				with tf.name_scope('texture_loss'):
@@ -495,7 +585,7 @@ class Model(ModelDesc):
 						x = tf.space_to_batch_nd(x, [p, p], [[0, 0], [0, 0]])  # [b * ?, h/p, w/p, c]
 						x = tf.reshape(x, [p, p, -1, h // p, w // p, c])       # [p, p, b, h/p, w/p, c]
 						x = tf.transpose(x, [2, 3, 4, 0, 1, 5])                # [b * ?, p, p, c]
-						patches_a, patches_b = tf.split(x, 2, axis=0)          # each is b,h/p,w/p,p,p,c
+						patches_a, _, patches_b = tf.split(x, 3, axis=0)       # each is b,h/p,w/p,p,p,c; 	split to render, _image, style
 
 						patches_a = tf.reshape(patches_a, [-1, p, p, c])       # [b * ?, p, p, c]
 						patches_b = tf.reshape(patches_b, [-1, p, p, c])       # [b * ?, p, p, c]
@@ -508,42 +598,75 @@ class Model(ModelDesc):
 					texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
 					texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
 					texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
+					texture_loss_conv4_1 = tf.identity(texture_loss(conv4_1), name='normalized_conv4_1')
+					texture_loss_conv5_1 = tf.identity(texture_loss(conv5_1), name='normalized_conv5_1')
 
-				return [pool2_loss, pool5_loss, texture_loss_conv1_1, texture_loss_conv2_1, texture_loss_conv3_1]
+					add_moving_summary(texture_loss_conv1_1)
+					add_moving_summary(texture_loss_conv2_1)
+					add_moving_summary(texture_loss_conv3_1)
+					add_moving_summary(texture_loss_conv4_1)
+					add_moving_summary(texture_loss_conv5_1)
 
-		additional_losses_2d = additional_losses(R, S, name='VGG19_2d') # Concat Rendering and Style
+				return [pool2_loss, 
+						pool5_loss, 
+						texture_loss_conv1_1, 
+						texture_loss_conv2_1, 
+						texture_loss_conv3_1, 
+						texture_loss_conv4_1, 
+						texture_loss_conv5_1, 
+						]
 
-		rand_indices_I = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
-		rand_indices_V = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
-		# I_extracted = I[:,:,:,rand_indices_I:rand_indices_I+3]
-		# V_extracted = V[:,:,:,rand_indices_V:rand_indices_V+3]
-		# additional_losses_3d = additional_losses(V_extracted, I_extracted) # Concat Rendering and Style
+		additional_losses_2d = additional_losses(R, I, S, name='VGG19') # Concat Rendering and Style
 
-		# tI = tf.transpose(I, [1, 2, 3, 0])
-		# tV = tf.transpose(V, [1, 2, 3, 0])
-		# cI = tf.image.grayscale_to_rgb(tI)
-		# cV = tf.image.grayscale_to_rgb(tV)
-		cI = tf.slice(I, [0, 0, 0, rand_indices_I], [1, DIMY, DIMX, 3])
-		cV = tf.slice(V, [0, 0, 0, rand_indices_V], [1, DIMY, DIMX, 3])
+		# rand_indices_I = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
+		# rand_indices_V = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
+		# # I_extracted = I[:,:,:,rand_indices_I:rand_indices_I+3]
+		# # V_extracted = V[:,:,:,rand_indices_V:rand_indices_V+3]
+		# # additional_losses_3d = additional_losses(V_extracted, I_extracted) # Concat Rendering and Style
 
-		additional_losses_3d = additional_losses(cI, cV, name='VGG19_3d')
+		# # tI = tf.transpose(I, [1, 2, 3, 0])
+		# # tV = tf.transpose(V, [1, 2, 3, 0])
+		# # cI = tf.image.grayscale_to_rgb(tI)
+		# # cV = tf.image.grayscale_to_rgb(tV)
+		# cI = tf.slice(I, [0, 0, 0, rand_indices_I], [1, DIMY, DIMX, 3])
+		# cV = tf.slice(V, [0, 0, 0, rand_indices_V], [1, DIMY, DIMX, 3])
+
+		# additional_losses_3d = additional_losses(cI, cV, name='VGG19_3d')
 
 		with tf.name_scope('additional_losses'):
 			# see table 2 from appendix
 			loss = []	
 			#loss.append(tf.multiply(GAN_FACTOR_PARAMETER, self.g_loss, name="loss_LA"))
-			loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
-			loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
-			loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
-			loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
-			loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
 
-			# loss.append(tf.multiply(1e+1, tf.reduce_mean(tf.abs(V-I)), name="loss_abs"))
-			loss.append(tf.multiply(2e-1, additional_losses_3d[0], name="loss_VP1"))
-			loss.append(tf.multiply(2e-2, additional_losses_3d[1], name="loss_VP2"))
-			loss.append(tf.multiply(3e-7, additional_losses_3d[2], name="loss_VT1"))
-			loss.append(tf.multiply(1e-6, additional_losses_3d[3], name="loss_VT2"))
-			loss.append(tf.multiply(1e-6, additional_losses_3d[4], name="loss_VT3"))
+			loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
+			loss.append(tf.multiply(2e-1, additional_losses_2d[1], name="loss_LP2"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[2], name="loss_LT1"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[3], name="loss_LT2"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[4], name="loss_LT3"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[5], name="loss_LT4"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[6], name="loss_LT5"))
+
+			# loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
+			# loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
+			# loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
+			# loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
+			# loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
+
+			# # loss.append(tf.multiply(1e+1, tf.reduce_mean(tf.abs(V-I)), name="loss_abs"))
+			# loss.append(tf.multiply(1e+1*2e-1, additional_losses_3d[0], name="loss_VP1"))
+			# loss.append(tf.multiply(1e+1*2e-2, additional_losses_3d[1], name="loss_VP2"))
+			# loss.append(tf.multiply(1e+1*3e-7, additional_losses_3d[2], name="loss_VT1"))
+			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[3], name="loss_VT2"))
+			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[4], name="loss_VT3"))
+
+		# wd_g = regularize_cost('gen/.*/W', 		l2_regularizer(1e-5), name='G_regularize')
+		# add_moving_summary(wd_g)
+		# loss.append(tf.multiply(1e+1, wd_g, name="regularizer"))		
+
+
+		tv_loss = tf.reduce_mean(tf.image.total_variation(R), name='tv_loss')
+		add_moving_summary(tv_loss)
+		loss.append(tf.multiply(5e-6, tv_loss, name="total_variation"))		
 
 		if get_current_tower_context().is_training:
 			self.cost = tf.add_n(loss, name='cost')
@@ -555,7 +678,8 @@ class Model(ModelDesc):
 			viz = tf.cast(tf.clip_by_value(viz, 0, 255), tf.uint8, name=name)
 			tf.summary.image(name, viz, max_outputs=30) #max(30, BATCH_SIZE)
 
-		visualize(tf.transpose(I[...,128-5:128+5,:,:], [1, 2, 3, 0]), name='viz_image')
+		# visualize(tf.transpose(I[...,128-5:128+5,:,:], [1, 2, 3, 0]), name='viz_image')
+		visualize(I, name='viz_image')
 		visualize(S, name='viz_style')
 		visualize(R, name='rendering')
 
@@ -592,8 +716,8 @@ if __name__ == '__main__':
 	parser.add_argument('--gpu', 	help='comma separated list of GPU(s) to use.')
 	parser.add_argument('--load', 	help='load model')
 	parser.add_argument('--apply', 	action='store_true')
-	parser.add_argument('--image', 	help='path to the image. ', default="data/image/")
-	parser.add_argument('--style',  help='path to the style. ', default="data/style/zebra_1")
+	parser.add_argument('--image', 	help='path to the image. ', default="data/image_mountain/")
+	parser.add_argument('--style',  help='path to the style. ', default="data/style_chinese/")
 	parser.add_argument('--vgg19', 	help='load model', 			default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving the rendering', default=".", type=str)
 	args = parser.parse_args()
