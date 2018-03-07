@@ -544,15 +544,26 @@ class Model(ModelDesc):
 							reduction=tf.losses.Reduction.MEAN
 						)
 
-					texture_loss_conv2_2 = tf.identity(texture_loss(conv2_2), name='normalized_conv2_2')
-					texture_loss_conv3_3 = tf.identity(texture_loss(conv3_3), name='normalized_conv3_3')
-					texture_loss_conv4_4 = tf.identity(texture_loss(conv4_4), name='normalized_conv4_4')
+					texture_loss_conv1_1 = tf.identity(texture_loss(conv1_1), name='normalized_conv1_1')
+					texture_loss_conv2_1 = tf.identity(texture_loss(conv2_1), name='normalized_conv2_1')
+					texture_loss_conv3_1 = tf.identity(texture_loss(conv3_1), name='normalized_conv3_1')
+					texture_loss_conv4_1 = tf.identity(texture_loss(conv4_1), name='normalized_conv4_1')
+					texture_loss_conv5_1 = tf.identity(texture_loss(conv5_1), name='normalized_conv5_1')
 
-					add_moving_summary(texture_loss_conv2_2)
-					add_moving_summary(texture_loss_conv3_3)
-					add_moving_summary(texture_loss_conv4_4)
+					add_moving_summary(texture_loss_conv1_1)
+					add_moving_summary(texture_loss_conv2_1)
+					add_moving_summary(texture_loss_conv3_1)
+					add_moving_summary(texture_loss_conv4_1)
+					add_moving_summary(texture_loss_conv5_1)
 
-				return [pool2_loss, pool5_loss, texture_loss_conv2_2, texture_loss_conv3_3, texture_loss_conv4_4]
+				return [pool2_loss, 
+						pool5_loss, 
+						texture_loss_conv1_1, 
+						texture_loss_conv2_1, 
+						texture_loss_conv3_1, 
+						texture_loss_conv4_1, 
+						texture_loss_conv5_1, 
+						]
 
 		additional_losses_2d = additional_losses(R, I, S, name='VGG19') # Concat Rendering and Style
 
@@ -577,10 +588,12 @@ class Model(ModelDesc):
 			#loss.append(tf.multiply(GAN_FACTOR_PARAMETER, self.g_loss, name="loss_LA"))
 
 			loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
-			loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
-			loss.append(tf.multiply(3e-7, additional_losses_2d[2], name="loss_LT1"))
-			loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
-			loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
+			loss.append(tf.multiply(2e-1, additional_losses_2d[1], name="loss_LP2"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[2], name="loss_LT1"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[3], name="loss_LT2"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[4], name="loss_LT3"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[5], name="loss_LT4"))
+			loss.append(tf.multiply(8e-7, additional_losses_2d[6], name="loss_LT5"))
 
 			# loss.append(tf.multiply(2e-1, additional_losses_2d[0], name="loss_LP1"))
 			# loss.append(tf.multiply(2e-2, additional_losses_2d[1], name="loss_LP2"))
@@ -602,7 +615,7 @@ class Model(ModelDesc):
 
 		tv_loss = tf.reduce_mean(tf.image.total_variation(R), name='tv_loss')
 		add_moving_summary(tv_loss)
-		loss.append(tf.multiply(1e-6, tv_loss, name="total_variation"))		
+		loss.append(tf.multiply(5e-6, tv_loss, name="total_variation"))		
 
 		if get_current_tower_context().is_training:
 			self.cost = tf.add_n(loss, name='cost')
