@@ -125,7 +125,8 @@ class ImageDataFlow(RNGDataFlow):
 					lut = np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
 					# lut = 255.0 - np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
 					# lut = 128.0 * np.ones_like(lut)
-					# lut[0] = 0.0
+					lut = 16.0 * np.ones_like(lut)
+					lut[0] = 0.0
 					# lut[0] = 0.1
 					# lut[1] = 0.6
 					# ..
