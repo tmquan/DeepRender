@@ -34,7 +34,7 @@ from tensorpack.utils import logger
 
 
 ###################################################################################################
-EPOCH_SIZE = 10
+EPOCH_SIZE = 100
 NB_FILTERS = 32	  # channel size
 
 DIMX  = 256
@@ -104,12 +104,18 @@ class ImageDataFlow(RNGDataFlow):
 				degrees = np.random.uniform(low=0.0, high=360.0)
 				image = scipy.ndimage.interpolation.rotate(image.copy().astype(np.float32), 
 					angle=degrees, 
-					axes=(2, 1), # Rotate along x and z
+					axes=(0, 2), # Rotate along x and z
 					reshape=False, #If reshape is true, the output shape is adapted so that the input 
 								   #array is contained completely in the output. Default is True
 					order=3, 
-					mode='constant') 
-				image = image.astype(np.uint8)
+
+					mode='constant')
+				# print(image)
+				image = np.clip(image, 0.0, 255.0) 
+				# image = image.astype(np.uint8)
+
+				# print(image.max())
+				# print(image.min())
 				#
 				# If not specify alpha value
 				# Generate random alpha value
@@ -120,6 +126,7 @@ class ImageDataFlow(RNGDataFlow):
 					lut = np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
 					# lut = 255.0 - np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
 					lut = 128.0 * np.ones_like(lut)
+					# lut[0] = 0.0
 					# lut[0] = 0.1
 					# lut[1] = 0.6
 					# ..
@@ -128,16 +135,16 @@ class ImageDataFlow(RNGDataFlow):
 					pass
 
 				##### Doing projection
-				color_s = image.copy().astype(np.uint8) # Construct the per-voxel color (or resample _s)
-				alpha_s = lut[color_s].astype(np.uint8)	# Construct the per-voxel alpha (or resample _s)
+				color_s = image.copy() 					# Construct the per-voxel color (or resample _s)
+				alpha_s = lut[color_s.astype(np.uint8)]	# Construct the per-voxel alpha (or resample _s)
 
 				color = np.zeros((DIMY, DIMX), dtype=np.float32)
 				alpha = np.zeros((DIMY, DIMX), dtype=np.float32)
 
 				
-				isFrontToBack = False 
+				isBackToFront = False 
 
-				if isFrontToBack:		
+				if isBackToFront:		
 					# Front-to-back compositing
 					#
 					# color_o =  color_s*alpha_s*(1-alpha_i) + color_i
@@ -145,12 +152,12 @@ class ImageDataFlow(RNGDataFlow):
 					#
 					# color   =  color_s*alpha_s*(1-alpha) + color
 					# alpha   =          alpha_s*(1-alpha) + alpha
-					# for z in range(0, 256, 1): # March from 0 to 255
-					for z in range(255, -1, -1): # March from 255 to 0
-						c = color_s[...,z]/255.0
-						a = alpha_s[...,z]/255.0
-						color = c * a * (1-alpha) + color
-						alpha =     a * (1-alpha) + alpha
+					# for z in range(255, -1, -1): # March from 255 to 0
+					for z in range(0, 256, 1): # March from 0 to 255
+						c = color_s[:,:,z]/255.0
+						a = alpha_s[:,:,z]/255.0
+						color = c * a * (1.0 - alpha) + color
+						alpha =     a * (1.0 - alpha) + alpha
 				else:
 					# Back-to-front compositing
 					# color_o = (1-alpha_i)*color_s + color_i
@@ -160,20 +167,22 @@ class ImageDataFlow(RNGDataFlow):
 					# alpha = (1-alpha)*alpha_s + alpha
 					# for z in range(0, 256, 1): # March from 0 to 255
 					for z in range(255, -1, -1): # March from 255 to 0
-						c = color_s[...,z]/255.0
-						a = alpha_s[...,z]/255.0
-						color = c * (1-alpha) + color
-						alpha = a * (1-alpha) + alpha
-					
+						c = color_s[:,:,z]/255.0
+						a = alpha_s[:,:,z]/255.0
+						color = c * (1.0 - alpha) + color
+						alpha = a * (1.0 - alpha) + alpha
+					color = np.mean(color_s/255.0, axis=2)
+					alpha = np.mean(alpha_s/255.0, axis=2)
 
 				# Create the img2d image
-				img2d = np.zeros((DIMY, DIMX, 3), dtype=np.uint8)
-				# color = skimage.color.gray2rgb(color*255.0)
+				img2d = np.zeros((DIMY, DIMX, 3), dtype=np.float32)
+				color = skimage.color.gray2rgb(color*255.0)
+				img2d = color.copy()
 				# img2d = color.astype(np.uint8)
 				# img2d[...,3:4] = (alpha*255.0).astype(np.uint8)
-				img2d[...,0] = color
-				img2d[...,1] = color
-				img2d[...,2] = color
+				# img2d[...,0] = 255.0*color
+				# img2d[...,1] = 255.0*color
+				# img2d[...,2] = 255.0*color
 
 				# Expand the volume to 4D
 				image = np.expand_dims(image, axis=-0) # Expand to make bxyz
