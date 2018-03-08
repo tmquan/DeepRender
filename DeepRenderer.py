@@ -34,7 +34,7 @@ from tensorpack.utils import logger
 
 
 ###################################################################################################
-EPOCH_SIZE = 100
+EPOCH_SIZE = 10
 NB_FILTERS = 32	  # channel size
 
 DIMX  = 256
@@ -97,76 +97,89 @@ class ImageDataFlow(RNGDataFlow):
 								   constant_values=0, 
 						)
 				# Make dimz is the last channel
-				image = np.transpose(image, [1, 2, 0])
+				image = np.transpose(image.copy(), [1, 2, 0])
 
 				# Rotate and resample volume using the plane of first two axes
 				import scipy.ndimage.interpolation
 				degrees = np.random.uniform(low=0.0, high=360.0)
-				image = scipy.ndimage.interpolation.rotate(image, 
+				image = scipy.ndimage.interpolation.rotate(image.copy().astype(np.float32), 
 					angle=degrees, 
-					axes=(0, 1), 
+					axes=(2, 1), # Rotate along x and z
 					reshape=False, #If reshape is true, the output shape is adapted so that the input 
 								   #array is contained completely in the output. Default is True
 					order=3, 
-					mode='reflect')
-
+					mode='constant') 
+				image = image.astype(np.uint8)
 				#
 				# If not specify alpha value
 				# Generate random alpha value
 				#
-				if alpha_path==None: 
+				if self.alpha_path==None: 
 					# Generate random alpha value
-					table = np.random.uniform(low=0, high=256)
-					# table[0] = 0.1
-					# table[1] = 0.6
+					# lut = np.random.uniform(low=0, high=256, size=256).astype(np.uint8)
+					lut = np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
+					# lut = 255.0 - np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
+					lut = 128.0 * np.ones_like(lut)
+					# lut[0] = 0.1
+					# lut[1] = 0.6
 					# ..
-					# table[255] = 0.2
-
-				def lut(color):
-					return table(color)
-				color_s = image.copy() 		# Construct the per-voxel color (or resample _s)
-				alpha_s = map(lut, color)	# Construct the per-voxel alpha (or resample _s)
-
-				# Front-to-back compositing
-				#
-				# color_o =  color_s*alpha_s*(1-alpha_i) + color_i
-				# alpha_o =          alpha_s*(1-alpha_i) + alpha_i
-				#
-				# color   =  color_s*alpha_s*(1-alpha) + color
-				# alpha   =          alpha_s*(1-alpha) + alpha
-				color = np.zeros(DIMY, DIMX)
-				alpha = np.zeros(DIMY, DIMX)
-
-				for z in range(0, 256, 1): # March from 0 to 255
-					c = color_s[...,z]
-					a = alpha_s[...,z]
-					color = c * a * (1-alpha) + color
-					alpha =     a * (1-alpha) + alpha
+					# lut[255] = 0.2
+				else:
 					pass
 
-				# Back-to-front compositing
-				# color_o = (1-alpha_i)*color_s + color_i
-				# alpha_o = (1-alpha_i)*alpha_s + alpha_i
-				#
-				# color = (1-alpha)*color_s + color
-				# alpha = (1-alpha)*alpha_s + alpha
-				# Doing projection
-				for z in range(255, -1, -1): # March from 255 to 0
-					c = color_s[...,z]
-					a = alpha_s[...,z]
-					color = c * (1-alpha) + color
-					alpha = a * (1-alpha) + alpha
-					pass
+				##### Doing projection
+				color_s = image.copy().astype(np.uint8) # Construct the per-voxel color (or resample _s)
+				alpha_s = lut[color_s].astype(np.uint8)	# Construct the per-voxel alpha (or resample _s)
+
+				color = np.zeros((DIMY, DIMX), dtype=np.float32)
+				alpha = np.zeros((DIMY, DIMX), dtype=np.float32)
+
+				
+				isFrontToBack = False 
+
+				if isFrontToBack:		
+					# Front-to-back compositing
+					#
+					# color_o =  color_s*alpha_s*(1-alpha_i) + color_i
+					# alpha_o =          alpha_s*(1-alpha_i) + alpha_i
+					#
+					# color   =  color_s*alpha_s*(1-alpha) + color
+					# alpha   =          alpha_s*(1-alpha) + alpha
+					# for z in range(0, 256, 1): # March from 0 to 255
+					for z in range(255, -1, -1): # March from 255 to 0
+						c = color_s[...,z]/255.0
+						a = alpha_s[...,z]/255.0
+						color = c * a * (1-alpha) + color
+						alpha =     a * (1-alpha) + alpha
+				else:
+					# Back-to-front compositing
+					# color_o = (1-alpha_i)*color_s + color_i
+					# alpha_o = (1-alpha_i)*alpha_s + alpha_i
+					#
+					# color = (1-alpha)*color_s + color
+					# alpha = (1-alpha)*alpha_s + alpha
+					# for z in range(0, 256, 1): # March from 0 to 255
+					for z in range(255, -1, -1): # March from 255 to 0
+						c = color_s[...,z]/255.0
+						a = alpha_s[...,z]/255.0
+						color = c * (1-alpha) + color
+						alpha = a * (1-alpha) + alpha
+					
 
 				# Create the img2d image
-				img2d = np.zeros(DIMY, DIMX, 4)
-				color = skimage.color.gray2rgb(color)
-				img2d[...,0:3] = color
-				img2d[...,3:4] = alpha
+				img2d = np.zeros((DIMY, DIMX, 3), dtype=np.uint8)
+				# color = skimage.color.gray2rgb(color*255.0)
+				# img2d = color.astype(np.uint8)
+				# img2d[...,3:4] = (alpha*255.0).astype(np.uint8)
+				img2d[...,0] = color
+				img2d[...,1] = color
+				img2d[...,2] = color
 
 				# Expand the volume to 4D
-				image = np.expand_dims(image, axis=-1) # Expand to make bxyz
-				img2d = np.expand_dims(img2d, axis=-1)
+				image = np.expand_dims(image, axis=-0) # Expand to make bxyz
+				alpha_s = np.expand_dims(alpha_s, axis=0)
+				image = np.concatenate((image, alpha_s), axis=-1) # Concatenate the volume [b y x (z+c)]
+				img2d = np.expand_dims(img2d, axis=0)
 
 				# Read the style
 				style = skimage.io.imread(styles[rand_style])
@@ -239,7 +252,9 @@ class ImageDataFlow(RNGDataFlow):
 
 			yield [image.astype(np.float32), 
 				   style.astype(np.float32), 
+				   img2d.astype(np.float32), 
 				   ]
+
 	def random_flip(self, image, seed=None):
 		assert ((image.ndim == 2) | (image.ndim == 3))
 		if seed:
@@ -326,16 +341,18 @@ class ImageDataFlow(RNGDataFlow):
 		return warped
 
 ####################################################################################################
-def get_data(image_path, style_path, size=EPOCH_SIZE):
-	ds_train = ImageDataFlow(image_path,
-							 style_path, 
+def get_data(image_path, style_path, alpha_path=None, size=EPOCH_SIZE):
+	ds_train = ImageDataFlow(image_path=image_path,
+							 style_path=style_path, 
+							 alpha_path=alpha_path, 
 							 size=size, 
 							 isTrain=True
 							 )
 
-	ds_valid = ImageDataFlow(image_path,
-							 style_path, 
-							 size=360, 
+	ds_valid = ImageDataFlow(image_path=image_path,
+							 style_path=style_path, 
+							 alpha_path=alpha_path, 
+							 size=size, 
 							 isValid=True
 							 )
 
@@ -430,26 +447,6 @@ def residual_dec(x, chan, first=False):
 		return x
 
 ###############################################################################
-# @auto_reuse_variable_scope
-# def arch_generator(img, last_dim=3):
-# 	assert img is not None
-# 	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=2, padding='SAME'):
-# 		e0 = residual_enc('e0', img, NB_FILTERS*1)
-# 		e1 = residual_enc('e1',  e0, NB_FILTERS*2)
-# 		e2 = residual_enc('e2',  e1, NB_FILTERS*4)
-
-# 		e3 = residual_enc('e3',  e2, NB_FILTERS*8)
-# 		# e3 = Dropout('dr', e3, 0.5)
-
-# 		d3 = residual_dec('d3',    e3, NB_FILTERS*4)
-# 		d2 = residual_dec('d2', d3+e2, NB_FILTERS*2)
-# 		d1 = residual_dec('d1', d2+e1, NB_FILTERS*1)
-# 		d0 = residual_dec('d0', d1+e0, NB_FILTERS*1) 
-# 		dd =  (LinearWrap(d0)
-# 				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
-# 		dc =  (LinearWrap(dd)
-# 				.Conv2D('dc',     DIMZ, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
-# 		return dd, dc
 @auto_reuse_variable_scope
 def arch_generator(image, style, last_dim=3):
 	assert image is not None
@@ -478,9 +475,10 @@ def arch_generator(image, style, last_dim=3):
 class Model(ModelDesc):
 	def _get_inputs(self):
 		return [
-			InputDesc(tf.float32, (None, DIMY, DIMX, DIMZ), 'image'), # un comment line image = np.expand_dims
+			InputDesc(tf.float32, (None, DIMY, DIMX, DIMZ*2), 'image'), # un comment line image = np.expand_dims
 			# InputDesc(tf.float32, (DIMZ, DIMY, DIMX,    1), 'image'),
 			InputDesc(tf.float32, (None, DIMY, DIMX,    3), 'style'),
+			InputDesc(tf.float32, (None, DIMY, DIMX,    3), 'img2d'),
 			]
 	#Fuse 2 branches of the image
 	@auto_reuse_variable_scope
@@ -491,7 +489,7 @@ class Model(ModelDesc):
 		G = tf.get_default_graph() # For round
 		tf.local_variables_initializer()
 		tf.global_variables_initializer()
-		I, S = inputs # Get the image I and style S
+		I, S, P = inputs # Get the image I and style S and Projection img2d P
 
 		print(I)
 		print(S)
@@ -500,6 +498,7 @@ class Model(ModelDesc):
 		# Convert to range tanh
 		I = tf_2tanh(I)
 		S = tf_2tanh(S)
+		P = tf_2tanh(P)
 
 		with argscope([Conv2D, Deconv2D, FullyConnected],
 					  W_init=tf.truncated_normal_initializer(stddev=0.02),
@@ -512,7 +511,7 @@ class Model(ModelDesc):
 
 
 		# Calculating loss goes here
-		def additional_losses(render, image, style, name='VGG19'):
+		def additional_losses(render, img2d, style, name='VGG19'):
 			VGG_MEAN = np.array([123.68, 116.779, 103.939])  # RGB
 			VGG_MEAN_TENSOR = tf.constant(VGG_MEAN, dtype=tf.float32)
 
@@ -530,9 +529,9 @@ class Model(ModelDesc):
 				return tf.matmul(v, v, transpose_a=True)
 	
 			with tf.variable_scope(name):
-				x = tf.concat([render, image, style], axis=0)
+				x = tf.concat([render, img2d, style], axis=0)
 				#x = tf.reshape(x, [2 * BATCH_SIZE, SHAPE_LR * 4, SHAPE_LR * 4, 3]) * 255.0
-				x = tf_2imag(x) # convert to range image
+				x = tf_2imag(x) # convert to range img2d
 				x = x - VGG_MEAN_TENSOR
 				# VGG 19
 				with varreplace.freeze_variables():
@@ -616,22 +615,8 @@ class Model(ModelDesc):
 						texture_loss_conv5_1, 
 						]
 
-		additional_losses_2d = additional_losses(R, I, S, name='VGG19') # Concat Rendering and Style
+		additional_losses_2d = additional_losses(R, P, S, name='VGG19') # Concat Rendering and Style
 
-		# rand_indices_I = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
-		# rand_indices_V = tf.random_uniform([], minval=0, maxval=DIMZ-3, dtype=tf.int32)
-		# # I_extracted = I[:,:,:,rand_indices_I:rand_indices_I+3]
-		# # V_extracted = V[:,:,:,rand_indices_V:rand_indices_V+3]
-		# # additional_losses_3d = additional_losses(V_extracted, I_extracted) # Concat Rendering and Style
-
-		# # tI = tf.transpose(I, [1, 2, 3, 0])
-		# # tV = tf.transpose(V, [1, 2, 3, 0])
-		# # cI = tf.image.grayscale_to_rgb(tI)
-		# # cV = tf.image.grayscale_to_rgb(tV)
-		# cI = tf.slice(I, [0, 0, 0, rand_indices_I], [1, DIMY, DIMX, 3])
-		# cV = tf.slice(V, [0, 0, 0, rand_indices_V], [1, DIMY, DIMX, 3])
-
-		# additional_losses_3d = additional_losses(cI, cV, name='VGG19_3d')
 
 		with tf.name_scope('additional_losses'):
 			# see table 2 from appendix
@@ -652,12 +637,7 @@ class Model(ModelDesc):
 			# loss.append(tf.multiply(1e-6, additional_losses_2d[3], name="loss_LT2"))
 			# loss.append(tf.multiply(1e-6, additional_losses_2d[4], name="loss_LT3"))
 
-			# # loss.append(tf.multiply(1e+1, tf.reduce_mean(tf.abs(V-I)), name="loss_abs"))
-			# loss.append(tf.multiply(1e+1*2e-1, additional_losses_3d[0], name="loss_VP1"))
-			# loss.append(tf.multiply(1e+1*2e-2, additional_losses_3d[1], name="loss_VP2"))
-			# loss.append(tf.multiply(1e+1*3e-7, additional_losses_3d[2], name="loss_VT1"))
-			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[3], name="loss_VT2"))
-			# loss.append(tf.multiply(1e+1*1e-6, additional_losses_3d[4], name="loss_VT3"))
+		
 
 		# wd_g = regularize_cost('gen/.*/W', 		l2_regularizer(1e-5), name='G_regularize')
 		# add_moving_summary(wd_g)
@@ -678,8 +658,8 @@ class Model(ModelDesc):
 			viz = tf.cast(tf.clip_by_value(viz, 0, 255), tf.uint8, name=name)
 			tf.summary.image(name, viz, max_outputs=30) #max(30, BATCH_SIZE)
 
-		# visualize(tf.transpose(I[...,128-5:128+5,:,:], [1, 2, 3, 0]), name='viz_image')
-		visualize(I, name='viz_image')
+		visualize(tf.transpose(I[...,128-2:128+2,:,:], [1, 2, 3, 0]), name='viz_image')
+		visualize(P, name='viz_img2d')
 		visualize(S, name='viz_style')
 		visualize(R, name='rendering')
 
@@ -692,7 +672,7 @@ class Model(ModelDesc):
 class VisualizeRunner(Callback):
 	def _setup_graph(self):
 		self.pred = self.trainer.get_predictor(
-			['image', 'style'], ['rendering'])
+			['image', 'style', 'img2d'], ['rendering'])
 
 	def _before_train(self):
 		global args
@@ -707,7 +687,7 @@ class VisualizeRunner(Callback):
 
 			self.trainer.monitors.put_image('viz_valid', viz_valid)
 ###################################################################################################
-def apply(model_path, image_path, style_path):
+def apply(model_path, image_path, alpha_path, style_path):
 	pass
 
 ###################################################################################################
@@ -716,7 +696,7 @@ if __name__ == '__main__':
 	parser.add_argument('--gpu', 	help='comma separated list of GPU(s) to use.')
 	parser.add_argument('--load', 	help='load model')
 	parser.add_argument('--apply', 	action='store_true')
-	parser.add_argument('--image', 	help='path to the image. ', default="data/image_mountain/")
+	parser.add_argument('--image', 	help='path to the image. ', default="data/image_3d/")
 	parser.add_argument('--style',  help='path to the style. ', default="data/style_chinese/")
 	parser.add_argument('--vgg19', 	help='load model', 			default="data/vgg19.npz")
 	parser.add_argument('--output', help='directory for saving the rendering', default=".", type=str)
@@ -741,7 +721,7 @@ if __name__ == '__main__':
 		ds_train = PrintData(ds_train)
 		ds_valid = PrintData(ds_valid)
 
-		ds_train = PrefetchDataZMQ(ds_train, 8)
+		ds_train = PrefetchDataZMQ(ds_train, 4)
 		ds_valid = PrefetchDataZMQ(ds_valid, 1)
 		
 
