@@ -34,7 +34,7 @@ from tensorpack.utils import logger
 
 
 ###################################################################################################
-EPOCH_SIZE = 100
+EPOCH_SIZE = 10
 NB_FILTERS = 32	  # channel size
 
 DIMX  = 256
@@ -104,11 +104,10 @@ class ImageDataFlow(RNGDataFlow):
 				degrees = np.random.uniform(low=0.0, high=360.0)
 				image = scipy.ndimage.interpolation.rotate(image.copy().astype(np.float32), 
 					angle=degrees, 
-					axes=(0, 2), # Rotate along x and z
+					axes=(1, 2), # Rotate along x and z
 					reshape=False, #If reshape is true, the output shape is adapted so that the input 
 								   #array is contained completely in the output. Default is True
 					order=3, 
-
 					mode='constant')
 				# print(image)
 				image = np.clip(image, 0.0, 255.0) 
@@ -125,7 +124,7 @@ class ImageDataFlow(RNGDataFlow):
 					# lut = np.random.uniform(low=0, high=256, size=256).astype(np.uint8)
 					lut = np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
 					# lut = 255.0 - np.linspace(start=0, stop=256, num=256, endpoint=False).astype(np.uint8)
-					lut = 128.0 * np.ones_like(lut)
+					# lut = 128.0 * np.ones_like(lut)
 					# lut[0] = 0.0
 					# lut[0] = 0.1
 					# lut[1] = 0.6
@@ -135,6 +134,8 @@ class ImageDataFlow(RNGDataFlow):
 					pass
 
 				##### Doing projection
+				# Compositing algorithm formula is from slide 23 of
+				# http://www.seas.upenn.edu/~cis565/LECTURES/VolumeRendering.pdf
 				color_s = image.copy() 					# Construct the per-voxel color (or resample _s)
 				alpha_s = lut[color_s.astype(np.uint8)]	# Construct the per-voxel alpha (or resample _s)
 
@@ -142,42 +143,28 @@ class ImageDataFlow(RNGDataFlow):
 				alpha = np.zeros((DIMY, DIMX), dtype=np.float32)
 
 				
-				isBackToFront = False 
+				isBackToFront = True 
 
 				if isBackToFront:		
-					# Front-to-back compositing
-					#
-					# color_o =  color_s*alpha_s*(1-alpha_i) + color_i
-					# alpha_o =          alpha_s*(1-alpha_i) + alpha_i
-					#
-					# color   =  color_s*alpha_s*(1-alpha) + color
-					# alpha   =          alpha_s*(1-alpha) + alpha
-					# for z in range(255, -1, -1): # March from 255 to 0
-					for z in range(0, 256, 1): # March from 0 to 255
-						c = color_s[:,:,z]/255.0
-						a = alpha_s[:,:,z]/255.0
-						color = c * a * (1.0 - alpha) + color
-						alpha =     a * (1.0 - alpha) + alpha
+					# Over operator, back to front order
+					# Co[z] = Cs[z] + (1 - As[z]*Co[z+1]
+					# Ao[z] = As[z] + (1 - As[z]*Ao[z+1]
+					for z in range(255, -1, -1):
+						color = color_s[...,z]/255.0 + (1-alpha_s[...,z]/255.0) * color
+						alpha = alpha_s[...,z]/255.0 + (1-alpha_s[...,z]/255.0) * alpha
 				else:
-					# Back-to-front compositing
-					# color_o = (1-alpha_i)*color_s + color_i
-					# alpha_o = (1-alpha_i)*alpha_s + alpha_i
-					#
-					# color = (1-alpha)*color_s + color
-					# alpha = (1-alpha)*alpha_s + alpha
-					# for z in range(0, 256, 1): # March from 0 to 255
-					for z in range(255, -1, -1): # March from 255 to 0
-						c = color_s[:,:,z]/255.0
-						a = alpha_s[:,:,z]/255.0
-						color = c * (1.0 - alpha) + color
-						alpha = a * (1.0 - alpha) + alpha
-					color = np.mean(color_s/255.0, axis=2)
-					alpha = np.mean(alpha_s/255.0, axis=2)
+					# Under operator, front to back order
+					# Co[z] = Co[z-1] + (1 - Ao[z-1])*Cs[z]
+					# Ao[z] = Ao[z-1] + (1 - Ao[z-1])*As[z]
+					for z in range(0, 256, 1):
+						color = color + (1-alpha) * color_s[...,z]/255.0
+						alpha = alpha + (1-alpha) * alpha_s[...,z]/255.0
 
 				# Create the img2d image
 				img2d = np.zeros((DIMY, DIMX, 3), dtype=np.float32)
 				color = skimage.color.gray2rgb(color*255.0)
 				img2d = color.copy()
+				img2d = np.clip(img2d, 0.0, 255.0) 
 				# img2d = color.astype(np.uint8)
 				# img2d[...,3:4] = (alpha*255.0).astype(np.uint8)
 				# img2d[...,0] = 255.0*color
