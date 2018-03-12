@@ -316,7 +316,7 @@ def np_2imag(x, maxVal = 255.0, name='ToRangeImag'):
 # FusionNet
 @layer_register(log_shape=True)
 def residual(x, chan, first=False):
-	with argscope([Conv2D], nl=INLReLU, stride=1, kernel_shape=1):
+	with argscope([Conv2D], nl=INLReLU, stride=1, kernel_shape=3):
 		input = x
 		return (LinearWrap(x)
 				.Conv2D('conv1', chan, padding='SAME', dilation_rate=1)
@@ -331,7 +331,7 @@ def residual(x, chan, first=False):
 ###############################################################################
 @layer_register(log_shape=True)
 def Subpix2D(inputs, chan, scale=2, stride=1):
-	with argscope([Conv2D], nl=INLReLU, stride=stride, kernel_shape=1):
+	with argscope([Conv2D], nl=INLReLU, stride=stride, kernel_shape=3):
 		results = Conv2D('conv0', inputs, chan* scale**2, padding='SAME')
 		old_shape = inputs.get_shape().as_list()
 		# results = tf.reshape(results, [-1, chan, old_shape[2]*scale, old_shape[3]*scale])
@@ -343,7 +343,7 @@ def Subpix2D(inputs, chan, scale=2, stride=1):
 ###############################################################################
 @layer_register(log_shape=True)
 def residual_enc(x, chan, first=False):
-	with argscope([Conv2D, Deconv2D], nl=INLReLU, stride=1, kernel_shape=1):
+	with argscope([Conv2D, Deconv2D], nl=INLReLU, stride=1, kernel_shape=3):
 		x = (LinearWrap(x)
 			# .Dropout('drop', 0.75)
 			.Conv2D('conv_i', chan, stride=1) 
@@ -355,7 +355,7 @@ def residual_enc(x, chan, first=False):
 ###############################################################################
 @layer_register(log_shape=True)
 def residual_dec(x, chan, first=False):
-	with argscope([Conv2D, Deconv2D], nl=INLReLU, stride=1, kernel_shape=1):
+	with argscope([Conv2D, Deconv2D], nl=INLReLU, stride=1, kernel_shape=3):
 				
 		x = (LinearWrap(x)
 			.Subpix2D('deconv_i', chan, scale=1) 
@@ -370,7 +370,7 @@ def residual_dec(x, chan, first=False):
 def arch_generator(image, style, last_dim=3):
 	assert image is not None
 	assert style is not None
-	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=1, stride=1, padding='SAME'):
+	with argscope([Conv2D, Deconv2D], nl=INLReLU, kernel_shape=3, stride=1, padding='SAME'):
 		# image = tf.concat([image, style], axis=-1)
 		i0 = residual_enc('i0', image, NB_FILTERS*1)
 		i1 = residual_enc('i1',    i0, NB_FILTERS*2)
@@ -388,7 +388,7 @@ def arch_generator(image, style, last_dim=3):
 		d1 = residual_dec('d1', d2+i1, NB_FILTERS*1)
 		d0 = residual_dec('d0', d1+i0, NB_FILTERS*1) 
 		dd =  (LinearWrap(d0)
-				.Conv2D('dd', last_dim, kernel_shape=1, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
+				.Conv2D('dd', last_dim, kernel_shape=3, stride=1, padding='SAME', nl=tf.tanh, use_bias=True) ())
 		return dd
 ####################################################################################################
 class Model(ModelDesc):
@@ -640,7 +640,7 @@ if __name__ == '__main__':
 		ds_train = PrintData(ds_train)
 		ds_valid = PrintData(ds_valid)
 
-		ds_train = PrefetchDataZMQ(ds_train, 4)
+		ds_train = PrefetchDataZMQ(ds_train, 2)
 		ds_valid = PrefetchDataZMQ(ds_valid, 1)
 		
 
